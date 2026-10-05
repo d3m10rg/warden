@@ -22,3 +22,21 @@ jobs:
           python -B -m warden --database "$tempdir/history.sqlite3" collect --once
           python -B -m warden --database "$tempdir/history.sqlite3" status --json
           python -B -m warden --database "$tempdir/history.sqlite3" history --json
+  tag:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag tested version (never move an existing tag)
+        run: |
+          version=$(python3 -c 'from warden import __version__; print(__version__)')
+          tag="v$version"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+            echo "$tag already exists; leaving it unchanged."
+            exit 0
+          fi
+          git tag "$tag" "$GITHUB_SHA"
+          git push origin "refs/tags/$tag"
