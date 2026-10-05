@@ -1,0 +1,34 @@
+[Unit]
+Description=Warden read-only VPN observations (48-hour history)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -B /opt/warden/bin/warden collect
+User=root
+Group=root
+UMask=0077
+StateDirectory=warden
+StateDirectoryMode=0700
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=20
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=128M
+CPUQuota=20%
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/warden
+PrivateTmp=yes
+NoNewPrivileges=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

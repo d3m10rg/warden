@@ -1,0 +1,194 @@
+"""CLI and collector entry point. All network operations are read-only in 0.1."""
+import argparse
+import contextlib
+import json
+import os
+from pathlib import Path
+import signal
+import sqlite3
+import sys
+import time
+
+from . import __version__
+from .core import DEFAULTS, RETENTION, STALE_SECONDS, config
+from .linux import collect, journal_events
+from .storage import Store, history, latest, traffic
+
+
+def duration(value):
+    try:
+        units = {"s": 1, "m": 60, "h": 3600}
+        seconds = float(value[:-1]) * units[value[-1]]
+        if not 0 < seconds <= RETENTION:
+            raise ValueError()
+        return seconds
+    except (ValueError, KeyError, IndexError):
+        raise argparse.ArgumentTypeError("Use 1m, 1h, 24h, etc. Maximum: 48h") from None
+
+
+def parser():
+    root = argparse.ArgumentParser(description="Warden 0.1 — passive Ravelin observability (no network changes)")
+    root.add_argument("--version", action="version", version=__version__)
+    root.add_argument("--config", default="/etc/warden/config.json")
+    root.add_argument("--database", help="Override Warden history path")
+    root.add_argument("--demo", action="store_true", help="Synthetic data; no host inspection")
+    sub = root.add_subparsers(dest="command")
+    for name in ("status", "list", "show", "traffic", "history", "tui", "collect"):
+        cmd = sub.add_parser(name)
+        if name not in ("tui", "collect"):
+            cmd.add_argument("--json", action="store_true")
+        if name in ("status", "list", "show"):
+            cmd.add_argument("--live", action="store_true", help="Read host directly; do not write history")
+        if name in ("show", "traffic"):
+            cmd.add_argument("entity", help="Channel/interface ID, or ID/peer_id")
+        if name == "history":
+            cmd.add_argument("entity", nargs="?")
+            cmd.add_argument("--since", type=duration, default=RETENTION)
+        if name == "traffic":
+            cmd.add_argument("--window", type=duration, default=3600)
+        if name == "collect":
+            cmd.add_argument("--once", action="store_true")
+    return root
+
+
+def demo():
+    now = time.time()
+    tunnel = {"id": "secondary", "interface": "awgfp0", "name": "Forpost2 (demo)", "kind": "Failover member",
+              "role": "Active", "health": "Healthy", "reason": "Synthetic successful HTTPS probe", "note": "Demo only",
+              "enabled": True, "rank": None, "rx": 3000000, "tx": 900000, "rx_bps": 1250000, "tx_bps": 420000,
+              "healthy_observed_seconds": 120, "active_observed_seconds": 120,
+              "generation": "demo", "peers": [{"peer_id": "demo-peer", "name": "10.90.0.1/32",
+              "health": "Recent handshake", "handshake_age_seconds": 20, "handshake": int(now)-20,
+              "endpoint": "192.0.2.20:51889", "allowed_ips": ["0.0.0.0/0"], "rx": 2900000,
+              "tx": 890000, "generation": "demo", "rx_bps": 1200000, "tx_bps": 400000}]}
+    return {"schema_version": 1, "warden_version": __version__, "timestamp": now, "monotonic": time.monotonic(),
+            "boot": "demo", "duration_seconds": 0, "controller": {"active": "secondary", "reported_active": "secondary",
+            "version": "controller-v1", "fresh": True, "age_seconds": 2, "unreachable_guard": True, "local_source_rule": True},
+            "tunnels": [tunnel, dict(tunnel, id="primary", name="Forpost (demo)", interface="awgfp1",
+                role="None", health="Down", reason="Synthetic failed HTTPS probes", peers=[], rx_bps=0, tx_bps=0)],
+            "services": [{"id": "sing-box-vless-ws.service", "state": "Running"}, {"id": "nginx.service", "state": "Running"}],
+            "vless": {"users": 2, "client_session": "Not tested", "listeners": [{"address": "127.0.0.1", "port": 10000, "listening": True}]},
+            "warnings": ["DEMO: synthetic data; no commands executed"]}
+
+
+def snapshot(cfg, live=False):
+    problem = None
+    if not live:
+        try:
+            data = latest(cfg["database"])
+            if data:
+                return data
+        except (OSError, ValueError, sqlite3.Error):
+            problem = "History unavailable; showing a live observation"
+    data = collect(cfg)
+    data["warnings"].append(problem or "Live observation; rates and observed uptime require the collector")
+    return data
+
+
+@contextlib.contextmanager
+def collector_lock(path):
+    import fcntl
+    lockpath = Path(path).with_suffix(".lock")
+    lockpath.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    with lockpath.open("a") as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError("Warden collector already running; no second writer started") from None
+        yield
+
+
+def collector(cfg, once=False):
+    if sys.platform != "linux":
+        raise ValueError("Collector requires Linux")
+    os.umask(0o077)
+    stopping = False
+
+    def stop(*_):
+        nonlocal stopping
+        stopping = True
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, stop)
+    with collector_lock(cfg["database"]):
+        store = Store(cfg["database"])
+        try:
+            while not stopping:
+                start = time.monotonic()
+                data = collect(cfg)
+                cursor = store.get("journal_cursor")
+                events, new_cursor, complete = journal_events(cursor, since=store.get("journal_since"))
+                if not complete:
+                    data["warnings"].append("Switch journal unavailable or truncated (maximum 500 events per read)")
+                store.save(data, events, new_cursor, data["timestamp"]-2 if complete else None)
+                if once:
+                    print("Collected one observation into " + str(cfg["database"]))
+                    break
+                # Interruptible sleep; no catch-up burst after a slow collection.
+                deadline = time.monotonic() + max(1, 10 - (time.monotonic() - start))
+                while not stopping and time.monotonic() < deadline:
+                    time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+        finally:
+            store.close()
+
+
+def find_entity(data, key):
+    from .storage import entities
+    for name, row in entities(data):
+        if name == key:
+            return row
+    raise ValueError("Unknown entity; use warden list or warden show <tunnel>")
+
+
+def main(argv=None):
+    args_list = list(sys.argv[1:] if argv is None else argv)
+    args_list = [{"-status": "status", "-list": "list"}.get(a, a) for a in args_list]
+    args = parser().parse_args(args_list)
+    try:
+        cfg = dict(DEFAULTS) if args.demo else config(args.config)
+        if args.database:
+            cfg["database"] = str(Path(args.database).resolve())
+        name = args.command or ("tui" if sys.stdin.isatty() and sys.stdout.isatty() else "status")
+        if args.demo and name in ("collect", "traffic", "history"):
+            raise ValueError("Demo supports status/list/show/TUI only")
+        if name == "collect":
+            collector(cfg, args.once)
+            return 0
+        if name in ("traffic", "history"):
+            if not Path(cfg["database"]).is_file():
+                raise ValueError("No history yet; install/start warden-collector or run collect --once")
+            now = time.time()
+            result = traffic(cfg["database"], args.entity, now, args.window) if name == "traffic" else history(cfg["database"], now - args.since, args.entity)
+            if getattr(args, "json", False):
+                print(json.dumps({"schema_version": 1, "data": result}, ensure_ascii=True, indent=2))
+            else:
+                from .tui import format_history, format_traffic
+                print("\n".join(format_traffic(result) if name == "traffic" else format_history(result)))
+            return 0
+        data = demo() if args.demo else snapshot(cfg, getattr(args, "live", False))
+        if name == "tui":
+            from .tui import run
+            run(data, cfg, demo_mode=args.demo)
+            return 0
+        if name == "show":
+            result = find_entity(data, args.entity)
+        else:
+            result = data if name == "status" else data["tunnels"]
+        if getattr(args, "json", False):
+            age = time.time() - data["timestamp"]
+            print(json.dumps({"schema_version": 1, "age_seconds": round(age, 2),
+                              "stale": not 0 <= age <= STALE_SECONDS, "data": result}, ensure_ascii=True, indent=2))
+        else:
+            from .tui import overview
+            if name == "show":
+                print(json.dumps(result, ensure_ascii=True, indent=2))
+            else:
+                print("\n".join(overview(data)))
+        return 0
+    except (OSError, ValueError, sqlite3.Error) as exc:
+        # Config parsing/OS errors may contain raw input; report type, not secrets.
+        text = str(exc) if type(exc) is ValueError and not isinstance(exc, json.JSONDecodeError) else type(exc).__name__ + ": unable to read data; check paths/permissions"
+        print("warden: " + text, file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        return 130
