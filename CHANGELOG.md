@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.2.0
+
+- ASCII panel TUI with persistent navigation, selected rows, compact service/VLESS
+  views and a Diagnostics tab. Preview, confirmation and cancellation stay in TUI;
+  live observations keep refreshing during diagnostics.
+- Explicit IPv4 internal/external ping, controller-derived HTTPS target with TLS
+  verification, and opt-in iperf3 to a configured server. Defaults: three pings,
+  five-second HTTPS budget, five-second single-stream 5 Mbit/s speed test.
+- Fresh route/source/interface checks, socket device binding, HTTPS probe-table
+  guard checks and one diagnostic process at a time. No DNS/proxy/redirect fallback.
+  Confirmed TUI plans are rejected if their target or route changes before execution.
+- Passive allowlisted doctor report without addresses, peer IDs or credentials.
+- Collector remains passive with unchanged systemd sandbox, schema 1 and 48-hour
+  retention. No controller migration, network mutations, automatic tests or package
+  installation. Diagnostics are session-only and do not change failover health.
+
 ## 0.1.1
 
 - Treat clean `journalctl --grep` exit 1 with no matching entries as an empty

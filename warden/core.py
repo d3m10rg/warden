@@ -19,6 +19,7 @@ DEFAULTS = {
     "names": {},
     "notes": {},
     "peer_names": {},
+    "diagnostics": {},
 }
 SERVICES = (
     "ravelin-forpost-failover.service", "ravelin-forpost-failover.timer",
@@ -65,7 +66,19 @@ def config(path):
         if not isinstance(value[key], dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in value[key].items()):
             raise ValueError(key + " must map names to strings")
         value[key] = {k: clean(v) for k, v in value[key].items()}
+    from .diagnostics import validate_config
+    validate_config(value["diagnostics"])
     return value
+
+
+def controller_literals(path, wanted):
+    constants = {}
+    for node in ast.parse(read_text(path)).body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id in wanted:
+                    constants[target.id] = ast.literal_eval(node.value)
+    return constants
 
 
 def channels(cfg):
@@ -77,13 +90,7 @@ def channels(cfg):
         raw = data["channels"]
         version = "registry-v2"
     else:
-        tree = ast.parse(read_text(cfg["engine"]))
-        constants = {}
-        for node in tree.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id in ("PATHS", "SOURCE", "VERSION"):
-                        constants[target.id] = ast.literal_eval(node.value)
+        constants = controller_literals(cfg["engine"], ("PATHS", "SOURCE", "VERSION"))
         if constants.get("VERSION") != 1 or not isinstance(constants.get("PATHS"), dict):
             raise ValueError("unsupported controller; discovery only")
         raw = [dict(path, id=key) for key, path in constants["PATHS"].items()]
@@ -107,7 +114,8 @@ def channels(cfg):
                        "name": cfg["names"].get(key, clean(item.get("name", key))),
                        "peer": item["peer"], "local": item["local"], "public": item["public"],
                        "rank": rank, "enabled": enabled and not item.get("retired", False),
-                       "note": cfg["notes"].get(key, "")})
+                       "note": cfg["notes"].get(key, ""),
+                       "table": item.get("table"), "mark": item.get("mark")})
     if len({c["id"] for c in result}) != len(result) or len({c["interface"] for c in result}) != len(result):
         raise ValueError("duplicate channels")
     return version, result

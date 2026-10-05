@@ -1,4 +1,4 @@
-"""CLI and collector entry point. All network operations are read-only in 0.1."""
+"""Passive collector and explicit on-demand diagnostics."""
 import argparse
 import contextlib
 import json
@@ -27,7 +27,7 @@ def duration(value):
 
 
 def parser():
-    root = argparse.ArgumentParser(description="Warden 0.1 — passive Ravelin observability (no network changes)")
+    root = argparse.ArgumentParser(description="Warden — VPN observations and bounded on-demand diagnostics")
     root.add_argument("--version", action="version", version=__version__)
     root.add_argument("--config", default="/etc/warden/config.json")
     root.add_argument("--database", help="Override Warden history path")
@@ -48,6 +48,20 @@ def parser():
             cmd.add_argument("--window", type=duration, default=3600)
         if name == "collect":
             cmd.add_argument("--once", action="store_true")
+    doc = sub.add_parser("doctor", help="Passive allowlisted report, without addresses or credentials")
+    doc.add_argument("--json", action="store_true")
+    for name in ("ping", "https", "speed"):
+        cmd = sub.add_parser(name, help="Preview diagnostic; --run explicitly sends traffic")
+        cmd.add_argument("entity", help="Tunnel ID")
+        cmd.add_argument("--json", action="store_true")
+        cmd.add_argument("--run", action="store_true")
+        cmd.add_argument("--expect-plan", help=argparse.SUPPRESS)
+        if name == "ping":
+            cmd.add_argument("--scope", choices=("internal", "external"), default="internal")
+        if name == "speed":
+            cmd.add_argument("--seconds", type=int, choices=range(1, 11), default=5)
+            cmd.add_argument("--mbps", type=int, choices=range(1, 11), default=5)
+            cmd.add_argument("--reverse", action="store_true", help="Download instead of upload")
     return root
 
 
@@ -149,8 +163,33 @@ def main(argv=None):
         if args.database:
             cfg["database"] = str(Path(args.database).resolve())
         name = args.command or ("tui" if sys.stdin.isatty() and sys.stdout.isatty() else "status")
-        if args.demo and name in ("collect", "traffic", "history"):
+        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor"):
             raise ValueError("Demo supports status/list/show/TUI only")
+        if name in ("ping", "https", "speed", "doctor"):
+            from .diagnostics import diagnostic_lock, doctor, execute, format_result, plan
+            if sys.platform != "linux":
+                raise ValueError("Host diagnostics require Linux")
+            if name == "doctor":
+                result = doctor(collect(cfg))
+            else:
+                # SIGTERM from TUI must unwind subprocess/socket cleanup too.
+                def cancel(*_):
+                    raise KeyboardInterrupt()
+                signal.signal(signal.SIGTERM, cancel)
+                with diagnostic_lock():
+                    data = collect(cfg)
+                    p = plan(data, cfg, args.entity, args.scope if name == "ping" else name,
+                             getattr(args, "seconds", 5), getattr(args, "mbps", 5), getattr(args, "reverse", False))
+                    if args.expect_plan:
+                        expected = json.loads(args.expect_plan)
+                        if {k: v for k, v in p.items() if k != "timestamp"} != expected:
+                            raise ValueError("Diagnostic target/route changed; preview again before execution")
+                    result = execute(p) if args.run else p
+            if args.json or name == "doctor":
+                print(json.dumps(result, ensure_ascii=True, indent=2))
+            else:
+                print("\n".join(format_result(result)))
+            return 1 if result.get("status") in ("Failed", "Error", "Timeout", "No reply") else 0
         if name == "collect":
             collector(cfg, args.once)
             return 0
@@ -168,7 +207,7 @@ def main(argv=None):
         data = demo() if args.demo else snapshot(cfg, getattr(args, "live", False))
         if name == "tui":
             from .tui import run
-            run(data, cfg, demo_mode=args.demo)
+            run(data, cfg, demo_mode=args.demo, config_path=args.config)
             return 0
         if name == "show":
             result = find_entity(data, args.entity)
