@@ -206,6 +206,51 @@ class HistoryTests(unittest.TestCase):
 
 
 class CollectionTests(unittest.TestCase):
+    def test_empty_journal_exit_one_is_successful_empty_read(self):
+        for output in ("", "-- No entries --\n"):
+            with self.subTest(output=output), patch("warden.linux.subprocess.run", return_value=subprocess.CompletedProcess([],1,output,"")):
+                events,cursor,complete = linux.journal_events()
+                self.assertEqual(events,[])
+                self.assertIsNone(cursor)
+                self.assertTrue(complete)
+
+    def test_empty_journal_after_cursor_does_not_trigger_recovery(self):
+        with patch("warden.linux.subprocess.run", return_value=subprocess.CompletedProcess([],1,"","")) as run:
+            events,cursor,complete = linux.journal_events("cursor-a")
+        self.assertEqual(events,[])
+        self.assertEqual(cursor,"cursor-a")
+        self.assertTrue(complete)
+        self.assertEqual(run.call_count,1)
+
+    def test_real_journal_errors_are_not_hidden(self):
+        for code,output,error in ((1,"","Permission denied"), (1,"","Failed to seek to cursor"),
+                                  (1,"unexpected output",""), (2,"",""), (1,"-- No entries --","Warning: incomplete journal")):
+            with self.subTest(code=code,output=output,error=error), patch("warden.linux.subprocess.run", return_value=subprocess.CompletedProcess([],code,output,error)):
+                self.assertFalse(linux.journal_events()[2])
+
+    def test_exit_one_normalization_is_journal_grep_only(self):
+        with patch("warden.linux.subprocess.run", return_value=subprocess.CompletedProcess([],1,"","")):
+            self.assertIsNone(linux.command(["awg","show","interfaces"]))
+            self.assertIsNone(linux.command(["journalctl","--no-pager"]))
+
+    def test_journal_timeout_remains_unavailable(self):
+        with patch("warden.linux.subprocess.run", side_effect=subprocess.TimeoutExpired("journalctl",3)):
+            self.assertFalse(linux.journal_events()[2])
+
+    @unittest.skipUnless(sys.platform=="linux","Linux journalctl integration")
+    def test_real_journal_with_no_matching_events(self):
+        import shutil
+        import uuid
+        if not shutil.which("journalctl"):
+            self.skipTest("journalctl unavailable")
+        argv = ["journalctl","--no-pager","-o","json","--since","1 second ago",
+                "--grep=^WARDEN_NO_MATCH_"+uuid.uuid4().hex+"$","-n","1"]
+        result = subprocess.run(argv,capture_output=True,text=True,timeout=5,env=dict(os.environ,LC_ALL="C"))
+        if result.stderr.strip():
+            self.skipTest("This runner has no readable journal; error handling covered separately")
+        self.assertIn(result.returncode,(0,1))
+        self.assertEqual(linux.command(argv).strip(),"")
+
     def test_partial_failure_and_no_mutating_commands(self):
         calls = []
         def runner(argv):

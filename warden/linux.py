@@ -17,6 +17,15 @@ def command(argv):
     try:
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, timeout=3, env=dict(os.environ, LC_ALL="C", SYSTEMD_PAGER="cat"))
+        # journalctl --grep uses exit 1 for no matches, as well as for errors.
+        # Accept only a clean empty result; stderr, timeout or other output must
+        # remain unavailable rather than hiding permission/cursor/read failures.
+        empty_journal = (argv[0] == "journalctl" and
+                         any(arg.startswith("--grep=") for arg in argv) and
+                         result.returncode == 1 and not result.stderr.strip() and
+                         result.stdout.strip() in ("", "-- No entries --"))
+        if empty_journal:
+            return ""
         usable_units = argv[:2] == ["systemctl", "show"] and "Id=" in result.stdout
         if (result.returncode and not usable_units) or len(result.stdout) > 2_000_000:
             return None

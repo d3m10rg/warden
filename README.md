@@ -1,11 +1,11 @@
-# Warden 0.1.0
+# Warden 0.1.1
 
 Локальная консоль наблюдения за VPN-туннелями и компонентами VLESS на Ravelin.
 Полноэкранный интерфейс в стиле CPView, командный режим и история за последние
 48 часов. **Версия 0.1 ничего не меняет в маршрутизации и конфигурации VPN.**
 
 ```text
-WARDEN 0.1.0 | READ ONLY | Data age 2s | fresh observation
+WARDEN 0.1.1 | READ ONLY | Data age 2s | fresh observation
 [1 Overview]  2 Tunnels  3 Hosts  4 VLESS  5 Traffic  6 Events
 
 Egress: secondary | Controller: controller-v1 | probes fresh: True
@@ -57,7 +57,7 @@ IPsec представлен только состоянием службы; д�
 ```bash
 git clone https://github.com/d3m10rg/warden.git /root/warden
 cd /root/warden
-git checkout v0.1.0
+git checkout v0.1.1
 python3 -B bin/warden --demo
 python3 -B bin/warden status --live
 ```

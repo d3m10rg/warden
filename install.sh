@@ -36,7 +36,7 @@ systemctl stop warden-collector.service 2>/dev/null || true
 install -d -m 0755 /opt/warden /opt/warden/warden /opt/warden/bin
 install -m 0644 "$source_dir"/warden/*.py /opt/warden/warden/
 install -m 0755 "$source_dir/bin/warden" /opt/warden/bin/warden
-printf '%s\n' '0.1.0' > /opt/warden/.warden-install
+python3 -B /opt/warden/bin/warden --version > /opt/warden/.warden-install
 install -d -m 0700 /etc/warden /var/lib/warden
 if [ ! -e /etc/warden/config.json ]; then
     install -m 0600 "$source_dir/config.example.json" /etc/warden/config.json
