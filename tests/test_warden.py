@@ -161,6 +161,9 @@ class HistoryTests(unittest.TestCase):
         matches = [e for e in storage.history(self.path,0) if e["kind"]=="controller_switch"]
         self.assertEqual(len(matches), 1)
         self.assertEqual(self.store.get("journal_cursor"), "cursor-a")
+        self.assertTrue(any(e["kind"]=="controller_switch" for e in storage.history(self.path,0,"primary")))
+        self.assertTrue(any(e["kind"]=="controller_switch" for e in storage.history(self.path,0,"secondary")))
+        self.assertFalse(storage.history(self.path,0,"other"))
 
     def test_reader_never_creates_database(self):
         missing = self.path.parent/"missing.sqlite3"

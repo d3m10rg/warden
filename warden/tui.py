@@ -167,6 +167,9 @@ def run(data, cfg, demo_mode=False):
                 put(3, "Enlarge terminal to at least 60 columns / 8 rows.")
             else:
                 capacity = height-5
+                if tab == 1 and not detail:
+                    offset = min(offset, selected+1)
+                    offset = max(offset, selected+2-capacity)
                 offset = min(offset, max(0, len(lines)-capacity))
                 for i, line in enumerate(lines[offset:offset+capacity]):
                     color = 3 if "Down" in line or "Failed" in line else 2 if "Unknown" in line or line.startswith("!") else 4 if "Healthy" in line else 0

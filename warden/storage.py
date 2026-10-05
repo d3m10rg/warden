@@ -59,8 +59,8 @@ def history(path, since, entity=None, limit=200):
         sql = "SELECT timestamp,kind,entity,detail FROM events WHERE timestamp>=?"
         args = [since]
         if entity:
-            sql += " AND (entity=? OR substr(entity,1,length(?)+1)=?||'/')"
-            args += [entity, entity, entity]
+            sql += " AND (entity=? OR substr(entity,1,length(?)+1)=?||'/' OR (kind='controller_switch' AND (instr(detail,?||' -> ')=1 OR substr(detail,-length(?)-4)=' -> '||?)))"
+            args += [entity] * 6
         sql += " ORDER BY timestamp DESC,id DESC LIMIT ?"
         return [dict(r) for r in conn.execute(sql, args + [limit])]
 
