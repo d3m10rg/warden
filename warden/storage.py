@@ -180,7 +180,12 @@ class Store:
                 if timestamp - RETENTION <= event["timestamp"] <= timestamp + 2:
                     self.event(**event)
             self.set("snapshot", snapshot)
-            if cursor:
+            if snapshot.get("journal", {}).get("reader_version") == 2 and self.get("journal_reader_version") != 2:
+                self.set("journal_cursor", None)
+                self.set("journal_since", None)
+            if cursor is not None:
                 self.set("journal_cursor", cursor)
             if journal_since is not None:
                 self.set("journal_since", journal_since)
+            if snapshot.get("journal", {}).get("reader_version") == 2:
+                self.set("journal_reader_version", 2)

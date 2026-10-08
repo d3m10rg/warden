@@ -8,12 +8,17 @@ import time
 from pathlib import Path
 
 from . import __version__
-from .core import (SERVICES, active_route, channel_health, channels, clean,
-                   controller_state, parse_peers, read_json, read_text,
+from .core import (RETENTION, SERVICES, active_route, channel_health, channels, clean,
+                   controller_state, number, parse_peers, read_json, read_text,
                    service_state, vless_summary)
 
 
-def command(argv):
+def command(argv, diagnostics=None):
+    def failure(reason):
+        if diagnostics is not None:
+            diagnostics["error"] = reason
+        return None
+
     try:
         result = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, timeout=3, env=dict(os.environ, LC_ALL="C", SYSTEMD_PAGER="cat"))
@@ -27,11 +32,18 @@ def command(argv):
         if empty_journal:
             return ""
         usable_units = argv[:2] == ["systemctl", "show"] and "Id=" in result.stdout
-        if (result.returncode and not usable_units) or len(result.stdout) > 2_000_000:
-            return None
+        if result.returncode and not usable_units:
+            reason = "cursor unavailable" if argv[0] == "journalctl" and "cursor" in result.stderr.lower() else "exit " + str(result.returncode)
+            return failure(reason)
+        if len(result.stdout) > 2_000_000:
+            return failure("output size limit")
+        if argv[0] == "journalctl" and result.stderr.strip():
+            return failure("journalctl reported a warning/error")
         return result.stdout
-    except (OSError, UnicodeError, subprocess.TimeoutExpired):
-        return None
+    except subprocess.TimeoutExpired:
+        return failure("timeout (3s)")
+    except (OSError, UnicodeError) as exc:
+        return failure(type(exc).__name__)
 
 
 def json_rows(text):
@@ -186,34 +198,105 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
             "vless": vless, "warnings": errors}
 
 
-def journal_events(cursor=None, runner=command, since=None):
-    """Read bounded switch-only journal entries. Persist cursor with DB transaction."""
+def journal_events(cursor=None, runner=command, since=None, diagnostics=None, clock=time.time):
+    """Read the FIRST 500 unit entries forward; retain only allowlisted switches.
+
+    Do not use --grep: -n without '+' implicitly reverses grep results, and a
+    rare-message filter does not bound the number of unit entries scanned.
+    """
+    info = diagnostics if diagnostics is not None else {}
+    info.update(reader_version=2, checked_at=clock(), status="Error", error=None,
+                records=0, cursor_recovered=False)
+    lower = max(info["checked_at"] - RETENTION, min(since, info["checked_at"]-2)) if number(since) else info["checked_at"] - RETENTION
+    if number(since) and not info["checked_at"]-RETENTION <= since <= info["checked_at"]:
+        cursor = None
     argv = ["journalctl", "--no-pager", "-o", "json", "-u", "ravelin-forpost-failover.service",
-            "--grep=^Protected egress:", "-n", "500"]
+            "--output-fields=MESSAGE", "-n", "+500"]
     if cursor:
         argv += ["--after-cursor", cursor]
     else:
-        argv += ["--since", "@" + str(int(since)) if since is not None else "48 hours ago"]
-    output = runner(argv)
+        argv += ["--since", "@" + str(int(lower))]
+
+    def read(args):
+        started = time.monotonic()
+        result = runner(args, diagnostics=info) if runner is command else runner(args)
+        info["duration_seconds"] = round(time.monotonic() - started, 3)
+        return result
+
+    output = read(argv)
     cursor_recovered = False
-    if output is None and cursor:
-        # Journal rotation can invalidate a cursor; re-read a bounded time range.
-        output = runner(argv[:-2] + ["--since", "48 hours ago"])
+    if output is None and cursor and info.get("error") == "cursor unavailable":
+        # A timeout/permission failure must not trigger a second expensive scan.
+        output = read(argv[:-2] + ["--since", "@" + str(int(lower))])
         cursor_recovered = True
+        if output is not None:
+            cursor = ""  # Clear a rotated cursor even when recovery is empty.
     if output is None:
+        info["error"] = info.get("error") or "read unavailable"
         return [], cursor, False
     import re
     events = []
+    info.update(error=None, cursor_recovered=cursor_recovered)
+    if output.strip() == "-- No entries --":
+        output = ""
+    last_timestamp = None
     for line in output.splitlines():
         try:
             data = json.loads(line)
-            match = re.fullmatch(r"Protected egress: ([\w-]+) -> ([\w-]+)", data.get("MESSAGE", ""))
+            stamp = int(data["__REALTIME_TIMESTAMP"]) / 1e6
+            next_cursor = data["__CURSOR"]
+            if not isinstance(next_cursor, str) or not next_cursor or not number(stamp):
+                raise ValueError()
+            message = data.get("MESSAGE", "")
+            match = re.fullmatch(r"Protected egress: ([\w-]+) -> ([\w-]+)", message) if isinstance(message, str) else None
             if match:
-                events.append({"timestamp": int(data["__REALTIME_TIMESTAMP"]) / 1e6,
+                events.append({"timestamp": stamp,
                                "kind": "controller_switch", "entity": "egress",
                                "detail": match.group(1) + " -> " + match.group(2),
                                "source_id": data["__CURSOR"]})
-            cursor = data.get("__CURSOR", cursor)
+            cursor = next_cursor
+            last_timestamp = stamp
+            info["records"] += 1
         except (ValueError, TypeError, KeyError):
-            continue
-    return events, cursor, not cursor_recovered and len(output.splitlines()) < 500
+            # Do not advance beyond an unreadable entry or call it complete.
+            info["error"] = "invalid journal entry"
+            return events, cursor, False
+    complete = info["records"] < 500
+    info["status"] = "Ready" if complete else "Catching up"
+    # On recovery, retain a visible history completeness warning for this read.
+    info["watermark"] = info["checked_at"]-2 if complete else last_timestamp-2
+    return events, cursor, complete
+
+
+class JournalPoller:
+    """Back off failed journal reads without delaying normal observations."""
+    def __init__(self):
+        self.retry_at = 0
+        self.failures = 0
+        self.info = {}
+
+    def poll(self, cursor, since, reader=journal_events, monotonic=time.monotonic):
+        now = monotonic()
+        if now < self.retry_at:
+            self.info["retry_in_seconds"] = max(1, round(self.retry_at-now))
+            return [], cursor, None
+        self.info = {}
+        events, cursor, complete = reader(cursor, since=since, diagnostics=self.info)
+        if self.info.get("error"):
+            self.failures = min(5, self.failures+1)
+            delay = min(600, 60 * 2**(self.failures-1))
+            self.retry_at = monotonic() + delay
+            self.info["retry_in_seconds"] = delay
+        else:
+            self.failures = 0
+            self.retry_at = 0
+        return events, cursor, self.info.get("watermark")
+
+    def warning(self):
+        if self.info.get("error"):
+            return "Switch journal: " + self.info["error"] + "; retry in " + str(self.info.get("retry_in_seconds", 0)) + "s"
+        if self.info.get("status") == "Catching up":
+            return "Switch journal catching up (500 unit records per cycle); history not current yet"
+        if self.info.get("cursor_recovered"):
+            return "Switch journal cursor recovered by time; completeness across rotation is not guaranteed"
+        return None

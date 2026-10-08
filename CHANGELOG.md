@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.1
+
+- Fix journal direction: `--grep` with `-n 500` implicitly reversed results.
+  Read the first 500 unit records forward, advance over ordinary service messages,
+  and retain only validated switch events. No grep scan for rare switch messages.
+- Rebuild the retained 48-hour switch history once in bounded batches after the
+  upgrade, preserving existing observations and deduplicating by journal cursor.
+- Report catching-up, timeout, command failure, invalid entries and cursor recovery
+  separately. Retry errors after 60 seconds, backing off to 10 minutes; passive
+  observations continue. Only an explicit cursor error triggers time-based recovery.
+- Doctor includes the collector's recorded journal status and snapshot age instead
+  of implying that live observation warnings cover the switch journal.
+- Keep the 128 MiB memory limit, VPN configuration and controller unchanged. Lower
+  cache pressure on Ravelin must be verified after the forward reader catches up.
+
 ## 0.2.0
 
 - ASCII panel TUI with persistent navigation, selected rows, compact service/VLESS

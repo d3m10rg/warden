@@ -209,13 +209,12 @@ class CollectionTests(unittest.TestCase):
     def test_empty_journal_exit_one_is_successful_empty_read(self):
         for output in ("", "-- No entries --\n"):
             with self.subTest(output=output), patch("warden.linux.subprocess.run", return_value=subprocess.CompletedProcess([],1,output,"")):
-                events,cursor,complete = linux.journal_events()
-                self.assertEqual(events,[])
-                self.assertIsNone(cursor)
-                self.assertTrue(complete)
+                self.assertEqual(linux.command(["journalctl", "--grep=^Protected egress:"]), "")
+                # No --grep now: exit 1 is an error, not a clean empty query.
+                self.assertFalse(linux.journal_events()[2])
 
     def test_empty_journal_after_cursor_does_not_trigger_recovery(self):
-        with patch("warden.linux.subprocess.run", return_value=subprocess.CompletedProcess([],1,"","")) as run:
+        with patch("warden.linux.subprocess.run", return_value=subprocess.CompletedProcess([],0,"","")) as run:
             events,cursor,complete = linux.journal_events("cursor-a")
         self.assertEqual(events,[])
         self.assertEqual(cursor,"cursor-a")
@@ -284,7 +283,7 @@ class CollectionTests(unittest.TestCase):
 
     def test_journal_only_safe_message(self):
         lines = [json.dumps({"MESSAGE":"Protected egress: primary -> secondary","__CURSOR":"abc","__REALTIME_TIMESTAMP":"1000000"}),
-                 json.dumps({"MESSAGE":"token=SECRET","__CURSOR":"def"})]
+                 json.dumps({"MESSAGE":"token=SECRET","__CURSOR":"def","__REALTIME_TIMESTAMP":"2000000"})]
         events,cursor,complete = linux.journal_events(runner=lambda argv:"\n".join(lines))
         self.assertEqual(cursor,"def")
         self.assertTrue(complete)
@@ -292,21 +291,19 @@ class CollectionTests(unittest.TestCase):
         self.assertNotIn("SECRET",json.dumps(events))
 
     def test_rotated_cursor_recovers_with_dedup_source_id(self):
-        calls = []
-        def runner(argv):
-            calls.append(argv)
-            if len(calls)==1:
-                return None
-            return json.dumps({"MESSAGE":"Protected egress: primary -> secondary","__CURSOR":"new","__REALTIME_TIMESTAMP":"1000000"})
-        events,cursor,complete = linux.journal_events("old",runner=runner)
+        output = json.dumps({"MESSAGE":"Protected egress: primary -> secondary","__CURSOR":"new","__REALTIME_TIMESTAMP":"1000000"})
+        info = {}
+        with patch("warden.linux.subprocess.run", side_effect=[subprocess.CompletedProcess([],1,"","Failed to seek to cursor"), subprocess.CompletedProcess([],0,output,"")]) as run:
+            events,cursor,complete = linux.journal_events("old",diagnostics=info)
         self.assertEqual(cursor,"new")
-        self.assertFalse(complete)
+        self.assertTrue(complete)
+        self.assertTrue(info["cursor_recovered"])
         self.assertEqual(len(events),1)
-        self.assertIn("--since",calls[1])
+        self.assertIn("--since",run.call_args_list[1].args[0])
 
     def test_empty_journal_uses_recent_window(self):
         calls=[]
-        linux.journal_events(runner=lambda args:calls.append(args) or "",since=100000)
+        linux.journal_events(runner=lambda args:calls.append(args) or "",since=100000,clock=lambda:100010)
         self.assertEqual(calls[0][-1],"@100000")
 
 

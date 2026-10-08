@@ -11,7 +11,7 @@ import time
 
 from . import __version__
 from .core import DEFAULTS, RETENTION, STALE_SECONDS, config
-from .linux import collect, journal_events
+from .linux import JournalPoller, collect
 from .storage import Store, history, latest, traffic
 
 
@@ -126,15 +126,21 @@ def collector(cfg, once=False):
         signal.signal(sig, stop)
     with collector_lock(cfg["database"]):
         store = Store(cfg["database"])
+        journal = JournalPoller()
         try:
             while not stopping:
                 start = time.monotonic()
                 data = collect(cfg)
-                cursor = store.get("journal_cursor")
-                events, new_cursor, complete = journal_events(cursor, since=store.get("journal_since"))
-                if not complete:
-                    data["warnings"].append("Switch journal unavailable or truncated (maximum 500 events per read)")
-                store.save(data, events, new_cursor, data["timestamp"]-2 if complete else None)
+                # Rebuild up to 48h once after upgrading the old reverse reader.
+                forward = store.get("journal_reader_version") == 2
+                cursor = store.get("journal_cursor") if forward else None
+                since = store.get("journal_since") if forward else None
+                events, new_cursor, watermark = journal.poll(cursor, since)
+                data["journal"] = dict(journal.info)
+                warning = journal.warning()
+                if warning:
+                    data["warnings"].append(warning)
+                store.save(data, events, new_cursor, watermark)
                 if once:
                     print("Collected one observation into " + str(cfg["database"]))
                     break
@@ -170,7 +176,11 @@ def main(argv=None):
             if sys.platform != "linux":
                 raise ValueError("Host diagnostics require Linux")
             if name == "doctor":
-                result = doctor(collect(cfg))
+                try:
+                    recorded = latest(cfg["database"])
+                except (OSError, ValueError, sqlite3.Error):
+                    recorded = None
+                result = doctor(collect(cfg), recorded)
             else:
                 # SIGTERM from TUI must unwind subprocess/socket cleanup too.
                 def cancel(*_):

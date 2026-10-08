@@ -241,18 +241,26 @@ def execute(p):
     return dict(result, plan=p, timestamp=time.time(), duration_seconds=round(time.monotonic()-started, 3))
 
 
-def doctor(data):
+def doctor(data, recorded=None):
     """Allowlist only: no addresses, peers, config text, journal, usernames or paths."""
     ctrl = data["controller"]
     checks = [{"check": "controller_observations", "ok": ctrl.get("fresh") is True},
               {"check": "unreachable_guard", "ok": ctrl.get("unreachable_guard") is True},
               {"check": "local_source_rule", "ok": ctrl.get("local_source_rule") is True}]
+    journal = {"status": "Not recorded"}
+    if recorded:
+        journal["snapshot_age_seconds"] = round(time.time()-recorded["timestamp"], 1)
+        saved = recorded.get("journal", {})
+        for key in ("status", "checked_at", "error", "records", "duration_seconds", "retry_in_seconds", "cursor_recovered"):
+            if key in saved:
+                journal[key] = saved[key]
     return {"schema_version": 1, "timestamp": data["timestamp"], "checks": checks,
             "tunnel_counts": {state: sum(r["health"] == state for r in data["tunnels"])
                               for state in ("Healthy", "Degraded", "Down", "Observed", "Unknown")},
             "services": [{"id": r["id"], "state": r["state"]} for r in data["services"]],
             "tools": {tool: shutil.which(tool) is not None for tool in ("ip", "ping", "iperf3")},
-            "observation_warnings": len(data["warnings"]), "client_session": "Not tested",
+            "observation_warnings": len(data["warnings"]), "collector_journal": journal,
+            "client_session": "Not tested",
             "note": "Passive report; diagnostics send traffic only with --run or TUI confirmation"}
 
 
