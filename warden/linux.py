@@ -3,13 +3,14 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 from pathlib import Path
 
 from . import __version__
 from .core import (RETENTION, SERVICES, active_route, channel_health, channels, clean,
-                   controller_state, number, parse_peers, read_json, read_text,
+                   controller_state, number, parse_peers, probe_details, read_json, read_text,
                    service_state, vless_summary)
 
 
@@ -56,16 +57,16 @@ def json_rows(text):
         return None
 
 
-def services(text):
+def services(text, unit_names=SERVICES):
     rows = []
     for block in (text or "").strip().split("\n\n"):
         row = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
-        if row.get("Id") in SERVICES:
+        if row.get("Id") in unit_names:
             rows.append({"id": row["Id"], "state": service_state(row),
                          "active": row.get("ActiveState"), "sub": row.get("SubState"),
                          "result": row.get("Result"), "exit_code": row.get("ExecMainStatus")})
     by_id = {r["id"]: r for r in rows}
-    return [by_id.get(name, {"id": name, "state": "Unknown"}) for name in SERVICES]
+    return [by_id.get(name, {"id": name, "state": "Unknown"}) for name in unit_names]
 
 
 def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
@@ -89,11 +90,15 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
     except (OSError, ValueError, TypeError):
         health = {}
         errors.append("Controller state unavailable/invalid")
+    transport_units = tuple("forpost-faketcp-" + p["interface"] + ".service" for p in paths
+                            if p.get("transport") in ("icmp", "faketcp") and
+                            re.fullmatch(r"awgfp[0-9]{1,8}", p["interface"]))
+    unit_names = SERVICES + transport_units
     tasks = {
         "links": ["ip", "-j", "-s", "link", "show"],
         "routes": ["ip", "-j", "-4", "route", "show", "table", "10400"],
         "rules": ["ip", "-j", "-4", "rule", "show"],
-        "units": ["systemctl", "show", "--no-pager", *SERVICES, "--property=Id,LoadState,Type,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestampMonotonic"],
+        "units": ["systemctl", "show", "--no-pager", *unit_names, "--property=Id,LoadState,Type,ActiveState,SubState,Result,ExecMainStatus,ExecMainExitTimestampMonotonic"],
         "listeners": ["ss", "-H", "-lnt"],
     }
     for tool in ("awg", "wg"):
@@ -167,6 +172,8 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
             if links is None:
                 status, reason = "Unknown", "Interface observation unavailable"
             role = "Active" if active == item["id"] else "Standby" if status == "Healthy" and item["enabled"] else "None"
+            if role != "Active" and not item["enabled"]:
+                role = "Retired" if item.get("retired") else "Disabled"
         else:
             recent = sum(r["health"] == "Recent handshake" for r in rows)
             status = "Observed" if recent else "Unknown"
@@ -179,6 +186,9 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
                    rx_errors=stats.get("rx", {}).get("errors"), tx_errors=stats.get("tx", {}).get("errors"),
                    generation=hashlib.sha256(json.dumps([(link or {}).get("ifindex"), [(p["peer_id"], p["generation"]) for p in rows]], sort_keys=True).encode()).hexdigest()[:16],
                    public_reachability="Not tested", private_reachability="Not tested")
+        if is_channel:
+            row["probe_details"] = probe_details(health, item["id"])
+            row["probes_fresh"] = controller["fresh"]
         objects.append(row)
     try:
         vless = vless_summary(cfg["vless"])
@@ -194,7 +204,7 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
     vless["protected_source_configured"] = vless.get("source_addresses") == ["10.78.254.2"] if "source_addresses" in vless else None
     return {"schema_version": 1, "warden_version": __version__, "timestamp": now, "monotonic": started,
             "boot": boot, "duration_seconds": max(0, monotonic() - started),
-            "controller": controller, "tunnels": objects, "services": services(outputs["units"]),
+            "controller": controller, "tunnels": objects, "services": services(outputs["units"], unit_names),
             "vless": vless, "warnings": errors}
 
 

@@ -9,7 +9,7 @@ from . import __version__
 from .core import STALE_SECONDS, clean
 from .storage import history, latest, traffic
 
-TABS = ("Overview", "Tunnels", "Hosts", "VLESS", "Traffic", "Events", "Diagnostics")
+TABS = ("Overview", "Tunnels", "Hosts", "VLESS", "Traffic", "Events", "Diagnostics", "Clients")
 
 
 def amount(value, suffix="B"):
@@ -56,9 +56,14 @@ def details(row):
              "Note: " + row.get("note", ""),
              "Observed healthy: " + elapsed(row.get("healthy_observed_seconds")),
              "Observed active:  " + elapsed(row.get("active_observed_seconds")),
-             "Rank: " + str(row.get("rank", "N/A")) + " (v1 has fixed controller policy)",
+             "Rank: " + str(row.get("rank") if row.get("rank") is not None else "N/A (not reported)"),
+             "Transport: " + clean(row.get("transport", "unmanaged")) +
+             " | enabled=" + str(row.get("enabled", "N/A")) + " | retired=" + str(row.get("retired", "N/A")),
              f"Interface totals RX={amount(row.get('rx'))} TX={amount(row.get('tx'))}",
              "", "Peers (handshake is not an end-to-end health check):"]
+    for probe in row.get("probe_details", []):
+        lines += [f"Controller probe ({'fresh' if row.get('probes_fresh') else 'STALE'}): "
+                  f"{probe['target']} | {probe['stage']} / {probe['reason']} | {probe['elapsed_ms']} ms"]
     for peer in row["peers"]:
         lines += [f"  {peer['peer_id']}  {clean(peer['name'])}",
                   f"    endpoint={peer['endpoint'] or 'none'} | {peer['health']} | handshake age={elapsed(peer['handshake_age_seconds'])}",
@@ -138,6 +143,18 @@ def page_lines(data, tab, selected, cfg, detail=False, demo_mode=False, width=10
             "d: passive doctor report    Esc: cancel running test",
             "Speed: 5s, 5 Mbit/s, upload; configure a prepared server first.",
             "Results describe the test time; they do not change failover."], width)
+    if tab == 7:
+        if demo_mode:
+            return panel("CLIENTS / DEMO", ["Client administration disabled; no host inspection."], width)
+        from .clients import names
+        try:
+            rows = names(cfg)
+        except (OSError, ValueError):
+            rows = ["Client list unavailable; check VLESS config and permissions."]
+        return panel("CLIENTS / names only", rows + ["", "Enter: open client management",
+                     "Show links / refresh subscriptions | Add | Rotate URI | Remove",
+                     "Operations require confirmation; add/rotate/remove restart sing-box.",
+                     "This list is passive. Credentials are not stored in Warden history."], width)
     if demo_mode:
         return panel("DEMO", ["No database reads or writes; history supplied by live collector."], width)
     if tab == 4:
@@ -163,7 +180,7 @@ def frame(data, lines, width, height, tab, offset=0, message="", demo_mode=False
     content = lines[offset:offset+capacity]
     content += [" " * width] * (capacity-len(content))
     footer = panel(f"{TABS[tab]} | lines {offset+1}-{min(len(lines), offset+capacity)}/{len(lines)}", [
-        message or "1-7/Tab: view | arrows: select/scroll | Enter: details",
+        message or "1-8/Tab: view | arrows: move | Enter: details/menu",
         "PgUp/PgDn: scroll | Esc: back/cancel | q: quit"], width)
     return header + content + footer
 
@@ -299,7 +316,23 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
                         ord('h'): ("https", None), ord('s'): ("speed", None), ord('d'): ("doctor", None)}[key]
                     diagnostic_lines, offset, cached_key = [], 0, None
                     start(command_name, entity, scope)
-            elif ord('1') <= key <= ord('7'):
+            elif tab == 7 and key in (10, 13, curses.KEY_ENTER):
+                if demo_mode:
+                    message = "DEMO: client administration disabled"
+                elif child is not None:
+                    message = "Wait for the diagnostic to finish, or cancel it with Esc first"
+                else:
+                    from .clients import menu
+                    curses.def_prog_mode()
+                    curses.endwin()
+                    try:
+                        menu(cfg)
+                    finally:
+                        curses.reset_prog_mode()
+                        curses.curs_set(0)
+                        stdscr.clear()
+                        cached_key, last_refresh = None, 0
+            elif ord('1') <= key <= ord('8'):
                 tab, offset, detail, pending = key-ord('1'), 0, False, None
                 if child is None:
                     message = ""

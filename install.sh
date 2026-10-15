@@ -32,8 +32,10 @@ if [ -e /usr/local/bin/warden ] && [ "$(readlink /usr/local/bin/warden || true)"
 fi
 # Validate source before stopping an already installed Warden collector.
 python3 -B "$source_dir/bin/warden" --demo status --json >/dev/null
+sh -n "$source_dir/helpers/manage-ravelin-vless-ws-users.sh"
 systemctl stop warden-collector.service 2>/dev/null || true
-install -d -m 0755 /opt/warden /opt/warden/warden /opt/warden/bin
+install -d -m 0755 /opt/warden /opt/warden/warden /opt/warden/bin /opt/warden/helpers
+install -m 0644 "$source_dir/helpers/manage-ravelin-vless-ws-users.sh" /opt/warden/helpers/
 install -m 0644 "$source_dir"/warden/*.py /opt/warden/warden/
 install -m 0755 "$source_dir/bin/warden" /opt/warden/bin/warden
 python3 -B /opt/warden/bin/warden --version > /opt/warden/.warden-install

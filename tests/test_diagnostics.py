@@ -191,7 +191,7 @@ class DiagnosticTests(unittest.TestCase):
     def test_frame_dimensions_and_all_tabs(self):
         value = data()
         for width, height in ((60, 16), (79, 24), (119, 40), (180, 50)):
-            for tab in range(7):
+            for tab in range(8):
                 rows = page_lines(value, tab, 0, core.DEFAULTS, demo_mode=True, width=width)
                 output = frame(value, rows, width, height, tab)
                 self.assertEqual(len(output), height)

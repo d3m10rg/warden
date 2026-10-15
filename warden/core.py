@@ -15,6 +15,7 @@ DEFAULTS = {
     "registry": "/etc/ravelin-forpost/channels.json",
     "health": "/run/ravelin-forpost/policy-health.json",
     "vless": "/etc/sing-box/vless-ws.json",
+    "clients_env": "/root/ravelin-vless-ws.env",
     "database": "/var/lib/warden/warden.sqlite3",
     "names": {},
     "notes": {},
@@ -59,7 +60,7 @@ def config(path):
         if set(extra) - set(value):
             raise ValueError("unknown configuration fields")
         value.update(extra)
-    for key in ("engine", "registry", "health", "vless", "database"):
+    for key in ("engine", "registry", "health", "vless", "database", "clients_env"):
         if not isinstance(value[key], str) or not (Path(value[key]).is_absolute() or PurePosixPath(value[key]).is_absolute()):
             raise ValueError(key + " must be an absolute path")
     for key in ("names", "notes", "peer_names"):
@@ -110,15 +111,39 @@ def channels(cfg):
         rank = item.get("rank")
         if rank is not None and (type(rank) is not int or rank <= 0):
             raise ValueError("invalid rank")
+        raw_transport = item.get("transport")
+        transport = "udp" if raw_transport is None else "unknown"
+        if isinstance(raw_transport, dict) and raw_transport.get("kind") in ("icmp", "faketcp"):
+            transport = raw_transport["kind"]
         result.append({"id": key, "interface": interface,
                        "name": cfg["names"].get(key, clean(item.get("name", key))),
                        "peer": item["peer"], "local": item["local"], "public": item["public"],
                        "rank": rank, "enabled": enabled and not item.get("retired", False),
+                       "retired": item.get("retired", False),
+                       "transport": transport,
                        "note": cfg["notes"].get(key, ""),
                        "table": item.get("table"), "mark": item.get("mark")})
     if len({c["id"] for c in result}) != len(result) or len({c["interface"] for c in result}) != len(result):
         raise ValueError("duplicate channels")
     return version, result
+
+
+def probe_details(data, key):
+    """Only explicit diagnostic fields from controller v2, never raw records."""
+    rows = data.get("probe_details", {})
+    rows = rows.get(key, []) if isinstance(rows, dict) else []
+    result = []
+    for row in rows[:8] if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            target = str(ipaddress.ip_address(row.get("target")))
+        except ValueError:
+            continue
+        result.append({"target": target, "stage": clean(row.get("stage", "unknown"), 24),
+                       "reason": clean(row.get("reason", "unknown"), 80),
+                       "elapsed_ms": row.get("elapsed_ms") if number(row.get("elapsed_ms")) else None})
+    return result
 
 
 def peer_id(key):

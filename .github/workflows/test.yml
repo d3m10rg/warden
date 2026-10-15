@@ -19,6 +19,7 @@ jobs:
       - name: Forward pagination against real journald
         run: sudo $(which python) -B -m unittest discover -s tests -p test_journal.py -v
       - run: sh -n install.sh
+      - run: sh -n helpers/manage-ravelin-vless-ws-users.sh
       - run: systemd-analyze verify systemd/warden-collector.service
       - name: Passive Linux collector smoke test
         run: |

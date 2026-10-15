@@ -50,6 +50,14 @@ def parser():
             cmd.add_argument("--once", action="store_true")
     doc = sub.add_parser("doctor", help="Passive allowlisted report, without addresses or credentials")
     doc.add_argument("--json", action="store_true")
+    clients = sub.add_parser("clients", help="Client menu; explicit VLESS subscription and credential operations")
+    actions = clients.add_subparsers(dest="client_action")
+    listing = actions.add_parser("list", help="Passive names-only list")
+    listing.add_argument("--json", action="store_true")
+    for name in ("show", "add", "rotate", "remove"):
+        cmd = actions.add_parser(name, help="Preview client operation; --run applies it")
+        cmd.add_argument("name", help="Client name; show also accepts all")
+        cmd.add_argument("--run", action="store_true")
     for name in ("ping", "https", "speed"):
         cmd = sub.add_parser(name, help="Preview diagnostic; --run explicitly sends traffic")
         cmd.add_argument("entity", help="Tunnel ID")
@@ -169,8 +177,11 @@ def main(argv=None):
         if args.database:
             cfg["database"] = str(Path(args.database).resolve())
         name = args.command or ("tui" if sys.stdin.isatty() and sys.stdout.isatty() else "status")
-        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor"):
+        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor", "clients"):
             raise ValueError("Demo supports status/list/show/TUI only")
+        if name == "clients":
+            from .clients import command
+            return command(cfg, args)
         if name in ("ping", "https", "speed", "doctor"):
             from .diagnostics import diagnostic_lock, doctor, execute, format_result, plan
             if sys.platform != "linux":
