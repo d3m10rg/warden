@@ -229,9 +229,9 @@ class ClientTests(unittest.TestCase):
                 os.write(master, b"\x1b")
                 time.sleep(0.3)
                 os.write(master, b"s")
-                until(b"CONFIRM CLIENT OPERATION")
+                until(b"y: apply | n/Esc: cancel")
                 os.write(master, b"y")
-                until(b"CLIENT OPERATION / RUNNING")
+                until(b"RUNNING")
                 os.write(master, b"q")  # Must not terminate a running update.
                 until(b"PRIVATE-RESULT")
                 os.write(master, b"\x1b")
