@@ -6,6 +6,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 
 from .core import DEFAULTS, read_json
 
@@ -73,14 +74,24 @@ def preview(cfg, action, name):
     return lines
 
 
-def execute(cfg, action, name):
+def backend(cfg, action, name):
     preview(cfg, action, name)  # Recheck before handing ownership to backend lock.
     if sys.platform != "linux" or os.geteuid() != 0:
         raise ValueError("Client operations require root on Linux")
-    if not HELPER.is_file() or not Path(cfg["clients_env"]).is_file():
-        raise ValueError("Client helper or clients_env file missing; check installation and configuration")
+    if not HELPER.is_file():
+        raise ValueError("Warden client helper missing; reinstall Warden")
+    if ".example" in Path(cfg["clients_env"]).name:
+        raise ValueError("clients_env points to an .example template; use or recover the runtime env")
+    if not Path(cfg["clients_env"]).is_file():
+        raise ValueError("Missing VLESS env: " + cfg["clients_env"] +
+                         ". Set clients_env in /etc/warden/config.json to the existing runtime env; do not use an .example file.")
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            "LANG": "C.UTF-8", "VLESS_ENV_FILE": cfg["clients_env"]}
+    return ["/bin/sh", str(HELPER), action, name], env
+
+
+def execute(cfg, action, name):
+    argv, env = backend(cfg, action, name)
     # A credential update spans several services. Ctrl-C must not kill it
     # halfway through. No timeout, automatic retry, or diagnostic cancel hook.
     def wait_for_backend(*_):
@@ -89,7 +100,7 @@ def execute(cfg, action, name):
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     previous = {sig: signal.signal(sig, wait_for_backend) for sig in signals}
     try:
-        result = subprocess.run(["/bin/sh", str(HELPER), action, name],
+        result = subprocess.run(argv,
                                 env=env, stdin=subprocess.DEVNULL, start_new_session=True)
     finally:
         for sig, handler in previous.items():
@@ -101,10 +112,58 @@ def execute(cfg, action, name):
     return 0
 
 
+class Operation:
+    """Drain a non-cancellable backend into bounded RAM, never the curses TTY."""
+    LIMIT = 256 * 1024
+
+    def __init__(self, cfg, action, name):
+        argv, env = backend(cfg, action, name)
+        self.output = bytearray()
+        self.truncated = False
+        self.returncode = None
+        self.process = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                        start_new_session=True)
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self):
+        try:
+            with self.process.stdout as stream:
+                while True:
+                    chunk = stream.read(4096)
+                    if not chunk:
+                        break
+                    remaining = self.LIMIT - len(self.output)
+                    self.output.extend(chunk[:remaining])
+                    self.truncated |= len(chunk) > remaining
+        finally:
+            self.returncode = self.process.wait()
+
+    def done(self):
+        return not self.thread.is_alive()
+
+    def wait(self):
+        self.thread.join()
+
+    def result(self):
+        rows = self.output.decode("utf-8", errors="replace").splitlines()
+        if self.truncated:
+            rows += ["Output truncated; request one client's links using the CLI."]
+        if self.returncode:
+            rows += ["Failed: some changes may already have applied. Inspect service state before retrying."]
+        return rows or ["Operation completed."]
+
+
 def command(cfg, args):
     action = args.client_action
     if action is None:
-        return menu(cfg)
+        if not sys.stdin.isatty() or not sys.stdout.isatty():
+            raise ValueError("Use warden clients list/show/add/rotate/remove in command mode")
+        from .cli import snapshot
+        from .tui import run
+        run(snapshot(cfg), cfg, config_path=args.config, initial_tab=7)
+        return 0
     if action == "list":
         rows = names(cfg)
         print(json.dumps({"schema_version": 1, "clients": rows}, indent=2) if args.json else
@@ -115,38 +174,3 @@ def command(cfg, args):
         print("PREVIEW ONLY: no changes or links generated. Use --run to execute.")
         return 0
     return execute(cfg, action, args.name)
-
-
-def menu(cfg):
-    """Terminal sub-screen, also opened from the Clients tab. No secret caching."""
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        raise ValueError("Use warden clients list/show/add/rotate/remove in command mode")
-    from .tui import panel
-    while True:
-        try:
-            print("\n".join(panel("CLIENTS", names(cfg) + ["", "show: links / refresh subscriptions",
-                  "add: new client | rotate: replace VLESS URI | remove: revoke access",
-                  "q: return | example: show alice"], 78)))
-            request = input("Action and client (show all for all links): ").strip()
-            if request.lower() in ("q", "quit", ""):
-                return 0
-            parts = request.split()
-            if len(parts) != 2:
-                print("Enter an action and a client name.")
-                continue
-            action, name = parts
-            print("\n".join(panel("PREVIEW", preview(cfg, action, name), 78)))
-            if input(f"Type '{action} {name}' to confirm, or Enter to cancel: ").strip() != f"{action} {name}":
-                print("Cancelled.")
-                continue
-            execute(cfg, action, name)
-            input("Press Enter to return to clients. ")
-        except (EOFError, KeyboardInterrupt):
-            return 0
-        except (OSError, ValueError) as exc:
-            # Do not print parser exceptions containing config/credential text.
-            print(str(exc) if type(exc) is ValueError else "Client data unavailable; check paths and permissions.")
-            try:
-                input("Press Enter to return. ")
-            except (EOFError, KeyboardInterrupt):
-                return 0

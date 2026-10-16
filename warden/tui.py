@@ -1,5 +1,6 @@
 """CPView-like keyboard console. Formatting is testable without curses."""
 import json
+import signal
 import subprocess
 import sys
 import textwrap
@@ -144,17 +145,10 @@ def page_lines(data, tab, selected, cfg, detail=False, demo_mode=False, width=10
             "Speed: 5s, 5 Mbit/s, upload; configure a prepared server first.",
             "Results describe the test time; they do not change failover."], width)
     if tab == 7:
-        if demo_mode:
-            return panel("CLIENTS / DEMO", ["Client administration disabled; no host inspection."], width)
-        from .clients import names
-        try:
-            rows = names(cfg)
-        except (OSError, ValueError):
-            rows = ["Client list unavailable; check VLESS config and permissions."]
-        return panel("CLIENTS / names only", rows + ["", "Enter: open client management",
-                     "Show links / refresh subscriptions | Add | Rotate URI | Remove",
-                     "Operations require confirmation; add/rotate/remove restart sing-box.",
-                     "This list is passive. Credentials are not stored in Warden history."], width)
+        from .clients_view import ClientsView
+        view = ClientsView(cfg, demo_mode)
+        view.refresh()
+        return view.render(width)
     if demo_mode:
         return panel("DEMO", ["No database reads or writes; history supplied by live collector."], width)
     if tab == 4:
@@ -180,18 +174,20 @@ def frame(data, lines, width, height, tab, offset=0, message="", demo_mode=False
     content = lines[offset:offset+capacity]
     content += [" " * width] * (capacity-len(content))
     footer = panel(f"{TABS[tab]} | lines {offset+1}-{min(len(lines), offset+capacity)}/{len(lines)}", [
-        message or "1-8/Tab: view | arrows: move | Enter: details/menu",
+        clean(message or "1-8/Tab: view | arrows: move | Enter: details/menu", max(1, width-4)),
         "PgUp/PgDn: scroll | Esc: back/cancel | q: quit"], width)
     return header + content + footer
 
 
-def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
+def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initial_tab=0):
     try:
         import curses
     except ImportError:
         raise ValueError("TUI requires Python curses on Linux; use status --json here") from None
 
     child = None
+    from .clients_view import ClientsView
+    clients_view = ClientsView(cfg, demo_mode)
 
     def cancel_child():
         nonlocal child
@@ -215,7 +211,7 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
             curses.use_default_colors()
             for i, color in enumerate((curses.COLOR_CYAN, curses.COLOR_YELLOW, curses.COLOR_RED, curses.COLOR_GREEN), 1):
                 curses.init_pair(i, color, -1)
-        tab, selected, offset, detail = 0, 0, 0, False
+        tab, selected, offset, detail = initial_tab, 0, 0, False
         last_refresh = 0
         cached_key, lines = None, []
         message, diagnostic_lines = "", []
@@ -242,6 +238,8 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
 
         while True:
             now = time.monotonic()
+            if clients_view.poll():
+                cached_key, offset = None, 0
             if child is not None and child.poll() is not None:
                 stdout, stderr = child.communicate()
                 child = None
@@ -276,7 +274,12 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
             key = (data["timestamp"], tab, selected, detail, int(now / 10), columns)
             if key != cached_key:
                 try:
-                    lines = page_lines(data, tab, selected, cfg, detail, demo_mode, columns)
+                    if tab == 7:
+                        if clients_view.mode == "list":
+                            clients_view.refresh()
+                        lines = clients_view.render(columns)
+                    else:
+                        lines = page_lines(data, tab, selected, cfg, detail, demo_mode, columns)
                     if tab == 6 and diagnostic_lines:
                         lines += panel("LAST DIAGNOSTIC", diagnostic_lines, columns)
                 except Exception:
@@ -285,9 +288,16 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
             capacity = max(1, height-8)
             if tab == 1 and not detail:
                 offset = max(min(offset, selected+3), selected+4-capacity)
+            if tab == 7 and clients_view.mode == "list":
+                offset = max(min(offset, clients_view.selected+3), clients_view.selected+4-capacity)
             offset = min(max(0, offset), max(0, len(lines)-capacity))
             stdscr.erase()
-            rendered = frame(data, lines, columns, height, tab, offset, message, demo_mode)
+            footer_message = message
+            if tab == 7:
+                footer_message = ("Up/Down: select | Enter/s: links | a/r/d: manage" if clients_view.mode == "list" else
+                                  "Operation running; wait for completion" if clients_view.operation else
+                                  "PgUp/PgDn: scroll | Esc: back")
+            rendered = frame(data, lines, columns, height, tab, offset, footer_message, demo_mode)
             for y, line in enumerate(rendered[:height]):
                 color = 1 if line.startswith("+") else 3 if "Down" in line or "Failed" in line else 2 if "Unknown" in line or "STALE" in line else 4 if "Healthy" in line else 0
                 attr = curses.color_pair(color) if curses.has_colors() else 0
@@ -299,6 +309,20 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
                     pass
             stdscr.refresh()
             key = stdscr.getch()
+            if tab == 7:
+                event = {27: "ESC", 10: "ENTER", 13: "ENTER", curses.KEY_ENTER: "ENTER",
+                         curses.KEY_UP: "UP", curses.KEY_DOWN: "DOWN", curses.KEY_PPAGE: "PGUP",
+                         curses.KEY_NPAGE: "PGDN", curses.KEY_LEFT: "LEFT", curses.KEY_RIGHT: "RIGHT",
+                         9: "TAB", curses.KEY_BACKSPACE: "BACKSPACE", 127: "BACKSPACE", 8: "BACKSPACE"}.get(
+                             key, chr(key) if 0 <= key <= 255 else "")
+                if child is not None and event in ("ENTER", "s", "a", "r", "d", "y"):
+                    message = "Wait for diagnostic completion or cancel with Esc"
+                    continue
+                if key != -1 and clients_view.handle(event):
+                    cached_key = None
+                    if clients_view.mode != "list":
+                        offset = clients_view.offset
+                    continue
             if key in (ord('q'), ord('Q')):
                 break
             if key == 27:
@@ -316,27 +340,13 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
                         ord('h'): ("https", None), ord('s'): ("speed", None), ord('d'): ("doctor", None)}[key]
                     diagnostic_lines, offset, cached_key = [], 0, None
                     start(command_name, entity, scope)
-            elif tab == 7 and key in (10, 13, curses.KEY_ENTER):
-                if demo_mode:
-                    message = "DEMO: client administration disabled"
-                elif child is not None:
-                    message = "Wait for the diagnostic to finish, or cancel it with Esc first"
-                else:
-                    from .clients import menu
-                    curses.def_prog_mode()
-                    curses.endwin()
-                    try:
-                        menu(cfg)
-                    finally:
-                        curses.reset_prog_mode()
-                        curses.curs_set(0)
-                        stdscr.clear()
-                        cached_key, last_refresh = None, 0
             elif ord('1') <= key <= ord('8'):
+                clients_view.reset()
                 tab, offset, detail, pending = key-ord('1'), 0, False, None
                 if child is None:
                     message = ""
             elif key in (9, curses.KEY_RIGHT, curses.KEY_LEFT):
+                clients_view.reset()
                 tab = (tab + (-1 if key == curses.KEY_LEFT else 1)) % len(TABS)
                 offset, detail, pending = 0, False, None
                 if child is None:
@@ -354,9 +364,21 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json"):
                     offset = max(0, offset+step)
             elif key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
                 offset = max(0, offset + (1 if key == curses.KEY_NPAGE else -1) * capacity)
+    def interrupt(*_):
+        if clients_view.operation is None:
+            raise KeyboardInterrupt()
+
+    signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+    previous = {sig: signal.signal(sig, interrupt) for sig in signals}
     try:
         curses.wrapper(screen)
     except curses.error:
         raise ValueError("Cannot initialize terminal; use warden status or a compatible TERM") from None
     finally:
+        # Never terminate the client backend on Esc, resize, Ctrl-C or TUI error.
+        if clients_view.operation:
+            clients_view.operation.wait()
+        clients_view.reset()
         cancel_child()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)

@@ -82,17 +82,79 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(signal.call_count, 6)  # handlers restored
         self.assertIn("Some changes may already have applied", output.getvalue())
 
-    def test_menu_requires_exact_confirmation(self):
-        output = io.StringIO()
-        output.isatty = lambda: True
-        with patch.object(clients.sys.stdin, "isatty", return_value=True), \
-             patch.object(clients.sys.stdout, "isatty", return_value=True), \
-             patch.object(clients, "names", return_value=["alice", "bob"]), \
-             patch.object(clients, "execute") as execute, \
-             patch("builtins.input", side_effect=["remove bob", "yes", "rotate alice", "rotate alice", "", "q"]), \
-             contextlib.redirect_stdout(output):
-            clients.menu(core.DEFAULTS)
-            execute.assert_called_once_with(core.DEFAULTS, "rotate", "alice")
+    def test_clients_view_confirmation_cancel_and_secret_cleanup(self):
+        from warden.clients_view import ClientsView
+        view = ClientsView(core.DEFAULTS)
+        with patch.object(clients, "names", return_value=["alice", "bob"]), \
+             patch.object(clients, "backend"), patch.object(clients, "Operation") as operation:
+            view.refresh()
+            view.handle("DOWN")
+            view.handle("d")
+            self.assertEqual(view.pending, ("remove", "bob"))
+            operation.assert_not_called()
+            view.handle("n")
+            self.assertEqual(view.mode, "list")
+            view.handle("r")
+            view.handle("y")
+            operation.assert_called_once_with(core.DEFAULTS, "rotate", "bob")
+            self.assertEqual(view.mode, "running")
+            for key in ("q", "ESC", "1", "y"):
+                self.assertTrue(view.handle(key))
+            operation.return_value.done.return_value = True
+            operation.return_value.result.return_value = ["vless://PRIVATE"]
+            view.poll()
+            self.assertIn("PRIVATE", " ".join(view.render(80)))
+            view.handle("ESC")
+            self.assertNotIn("PRIVATE", " ".join(view.render(80)))
+            self.assertIsNone(view.pending)
+
+    def test_clients_view_name_input_and_missing_env(self):
+        from warden.clients_view import ClientsView
+        view = ClientsView(core.DEFAULTS)
+        with patch.object(clients, "names", return_value=["alice"]), \
+             patch.object(clients, "backend", side_effect=ValueError("Missing VLESS env")), \
+             patch.object(clients, "Operation") as operation:
+            view.refresh()
+            view.handle("a")
+            for char in "qa-client":
+                view.handle(char)
+            self.assertEqual(view.text, "qa-client")
+            view.handle("ENTER")
+            self.assertEqual(view.mode, "result")
+            self.assertIsNone(view.pending)
+            view.handle("y")
+            operation.assert_not_called()
+            self.assertIn("Missing VLESS env", " ".join(view.render(80)))
+
+    def test_operation_captures_output_in_bounded_memory(self):
+        with patch.object(clients, "backend", return_value=(
+                [sys.executable, "-c", "import sys; sys.stdout.write('x'*300000); sys.stderr.write('done')"], dict(os.environ))):
+            job = clients.Operation(core.DEFAULTS, "show", "alice")
+            job.wait()
+            self.assertTrue(job.done())
+            self.assertEqual(job.returncode, 0)
+            self.assertEqual(len(job.output), job.LIMIT)
+            self.assertTrue(job.truncated)
+
+    def test_template_env_is_rejected_before_execution(self):
+        with patch.object(clients, "preview"), patch.object(clients.sys, "platform", "linux"), \
+             patch.object(clients.os, "geteuid", return_value=0, create=True), \
+             patch.object(clients.Path, "is_file", return_value=True), \
+             patch.object(clients.subprocess, "Popen") as spawn:
+            with self.assertRaisesRegex(ValueError, "template"):
+                clients.Operation(dict(core.DEFAULTS, clients_env="/root/vless.env.example"), "add", "test")
+            spawn.assert_not_called()
+
+    def test_long_notice_fits_small_frame_and_clients_page_scrolls(self):
+        from warden.tui import frame
+        from warden.clients_view import ClientsView
+        self.assertEqual(len(frame(demo(), ["test"], 60, 16, 7, message="Very long "*50)), 16)
+        view = ClientsView(core.DEFAULTS, demo=True)
+        view.users = ["client"+str(i) for i in range(25)]
+        view.handle("PGDN")
+        self.assertEqual(view.selected, 10)
+        view.handle("PGUP")
+        self.assertEqual(view.selected, 0)
 
     def test_controller_details_include_transport_and_tls_failure(self):
         p = core.probe_details({"probe_details": {"primary": [{"target": "192.0.2.1", "stage": "tls",
@@ -139,7 +201,9 @@ class ClientTests(unittest.TestCase):
             master, slave = pty.openpty()
             fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 120, 0, 0))
             code = ("from warden.tui import run; from warden.cli import demo; from warden.core import DEFAULTS; "
-                    "import sys; run(demo(),dict(DEFAULTS,vless=sys.argv[1],database=sys.argv[2]))")
+                    "import sys; from warden import clients; DEFAULTS['vless']=sys.argv[1]; "
+                    "clients.backend=lambda *a: ([sys.executable, '-c', \"import time; time.sleep(0.8); print('vless://PRIVATE-RESULT')\"],dict(__import__('os').environ)); "
+                    "run(demo(),dict(DEFAULTS,vless=sys.argv[1],database=sys.argv[2]))")
             process = subprocess.Popen([sys.executable, "-B", "-c", code, str(cfgpath), str(Path(tmp)/"missing.db")],
                 stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, TERM="xterm-256color"))
             os.close(slave)
@@ -155,15 +219,27 @@ class ClientTests(unittest.TestCase):
                 self.assertIn(text, output, output.decode(errors="replace"))
             try:
                 until(b"WARDEN")
-                os.write(master, b"8\r")
-                until(b"Action and client")
-                os.write(master, b"q\n")
-                # Return to curses then quit the monitor.
-                time.sleep(0.4)
+                os.write(master, b"8")
+                until(b"CLIENTS / Up-Down")
+                os.write(master, b"a")
+                until(b"ADD CLIENT")
+                os.write(master, b"qa-client")
+                until(b"qa-client")
+                os.write(master, b"\x1b")
+                time.sleep(0.3)
+                os.write(master, b"s")
+                until(b"CONFIRM CLIENT OPERATION")
+                os.write(master, b"y")
+                until(b"CLIENT OPERATION / RUNNING")
+                os.write(master, b"q")  # Must not terminate a running update.
+                until(b"PRIVATE-RESULT")
+                os.write(master, b"\x1b")
+                time.sleep(0.3)
                 os.write(master, b"q")
                 process.wait(timeout=8)
                 self.assertEqual(process.returncode, 0)
-                self.assertNotIn(b"PRIVATE", output)
+                self.assertNotIn(b"Action and client", output)
+                self.assertNotIn(b"Traceback", output)
             finally:
                 if process.poll() is None:
                     process.kill()
