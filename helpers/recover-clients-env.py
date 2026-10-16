@@ -22,10 +22,15 @@ def need(ok, message):
         raise ValueError(message)
 
 
-def build(renderer, policy):
+def build(renderer, policy, allow_missing=()):
     users = renderer["read_users"]()
     records = renderer["load_store"]()
-    need(users and {u["name"] for u in users} == set(records), "Client and subscription inventories differ; inspect before recovery")
+    current = {u["name"] for u in users}
+    missing = current - set(records)
+    need(users and records and not set(records) - current,
+         "Client and subscription inventories differ or no subscriptions remain; inspect before recovery")
+    need(missing == set(allow_missing),
+         "Missing subscription clients must match --allow-missing exactly; inspect inventories before recovery")
     directory = renderer["SUBSCRIPTION_DIR"]
     include = renderer["NGINX_INCLUDE"].read_text(encoding="utf-8")
     config = json.loads(renderer["CONFIG_PATH"].read_text(encoding="utf-8"))
@@ -34,6 +39,8 @@ def build(renderer, policy):
     ws_path = inbound[0]["transport"]["path"]
     env, expected_profiles = None, None
     for user in users:
+        if user["name"] in missing:
+            continue  # Explicitly named new clients have no payload to compare.
         token = records[user["name"]]["token"]
         need(re.fullmatch(r"[a-f0-9]{64}", token), "Invalid subscription token")
         uri = (directory / token).read_text(encoding="utf-8").strip()
@@ -90,16 +97,22 @@ def main():
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("/root/ravelin-vless-ws.env"))
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--allow-missing", action="append", default=[], metavar="CLIENT",
+                        help="Explicit client without a subscription record; repeat for each missing client")
     args = parser.parse_args()
     try:
         need(os.geteuid() == 0, "Run as root on Ravelin")
+        need(all(re.fullmatch(r"[A-Za-z0-9._-]{1,64}", name) for name in args.allow_missing),
+             "Invalid --allow-missing client name")
         need(args.policy.is_absolute() and args.policy.is_file(), "Specify an existing absolute Happ policy path")
         need(args.output.is_absolute() and not args.output.exists() and not args.output.is_symlink(), "Output must be an absent absolute path; existing files are never overwritten")
         # Load the already installed, trusted renderer without running its CLI.
         # Only its read/format functions are called. Suppress possible raw errors.
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             renderer = runpy.run_path("/usr/local/sbin/ravelin-vless-subscriptions", run_name="warden_env_check")
-            content = build(renderer, args.policy)
+            content = build(renderer, args.policy, args.allow_missing)
+        if args.allow_missing:
+            print("Clients without subscription records (not changed): " + ", ".join(sorted(set(args.allow_missing))))
         if args.apply:
             write_new(args.output, content)
             print("Created private client-management env: " + str(args.output))

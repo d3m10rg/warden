@@ -55,6 +55,36 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "prefix"):
             recovery["build"](self.renderer, self.policy)
 
+    def test_only_explicit_missing_client_can_be_excluded(self):
+        self.renderer["read_users"] = lambda: [
+            {"name": "test", "uuid": "PRIVATE-UUID"}, {"name": "new-client", "uuid": "NEW-PRIVATE"}]
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            recovery["build"](self.renderer, self.policy)
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            recovery["build"](self.renderer, self.policy, ["other-client"])
+        before = {p.name: p.read_bytes() for p in self.root.iterdir()}
+        content = recovery["build"](self.renderer, self.policy, ["new-client"])
+        self.assertIn("VLESS_WS_PATH='/test'", content)
+        self.assertNotIn("NEW-PRIVATE", content)
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.root.iterdir()})
+
+    def test_allow_missing_does_not_bypass_existing_payload_validation(self):
+        self.renderer["read_users"] = lambda: [
+            {"name": "test", "uuid": "PRIVATE-UUID"}, {"name": "new-client", "uuid": "NEW-PRIVATE"}]
+        (self.root / self.token).write_text(self.uri.replace("PRIVATE-UUID", "OLD-UUID"))
+        with self.assertRaisesRegex(ValueError, "credentials"):
+            recovery["build"](self.renderer, self.policy, ["new-client"])
+
+    def test_orphans_and_empty_store_are_always_refused(self):
+        for records in ({}, {"orphan": {"token": self.token}}):
+            self.renderer["load_store"] = lambda: records
+            with self.assertRaises(ValueError):
+                recovery["build"](self.renderer, self.policy, ["test"])
+
+    def test_stale_allow_missing_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "exactly"):
+            recovery["build"](self.renderer, self.policy, ["test"])
+
     def test_write_never_overwrites_existing_file(self):
         path = self.root / "restored.env"
         recovery["write_new"](path, "NEW")
