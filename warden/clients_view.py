@@ -24,11 +24,16 @@ class ClientsView:
         selected = self.users[self.selected] if self.users else None
         try:
             self.users = clients.names(self.cfg)
-            self.problem = ("Missing VLESS env: " + self.cfg["clients_env"] +
-                            ". Configure clients_env with the runtime file; .example is not a runtime config."
-                            if not Path(self.cfg["clients_env"]).is_file() else "")
         except (OSError, ValueError):
             self.users, self.problem = [], "Client list unavailable; check VLESS config and permissions."
+        else:
+            try:
+                available = Path(self.cfg["clients_env"]).is_file()
+            except OSError:
+                available = False
+            self.problem = ("Missing VLESS env: " + self.cfg["clients_env"] +
+                            ". Configure clients_env with the runtime file; .example is not a runtime config."
+                            if not available else "")
         self.selected = self.users.index(selected) if selected in self.users else min(self.selected, max(0, len(self.users)-1))
 
     def preview(self, action, name):

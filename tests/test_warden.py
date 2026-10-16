@@ -341,7 +341,7 @@ class InterfaceTests(unittest.TestCase):
         os.close(slave)
         try:
             time.sleep(0.5)
-            os.write(master,b"2\r\x1b345678\r")
+            os.write(master,b"2\r\x1b345678")
             fcntl.ioctl(master,termios.TIOCSWINSZ,struct.pack("HHHH",6,40,0,0))
             time.sleep(0.3)
             os.write(master,b"q")

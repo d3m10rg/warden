@@ -224,7 +224,8 @@ class ClientTests(unittest.TestCase):
                 os.write(master, b"a")
                 until(b"ADD CLIENT")
                 os.write(master, b"qa-client")
-                until(b"qa-client")
+                # Curses sends incremental cursor updates, not the whole name.
+                until(b"t_")
                 os.write(master, b"\x1b")
                 time.sleep(0.3)
                 os.write(master, b"s")
