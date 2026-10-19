@@ -47,6 +47,7 @@ def maintain(ctl, args):
         data = ctl.registry()
         channel = next((c for c in data["channels"] if c["id"] == args.id), None)
         p.require(channel is not None and not channel.get("retired"), "Channel absent or retired")
+        p.require(not channel.get("stopped"), "Channel is stopped; Start it before leaving Maintenance")
         entering = args.state == "on"
         p.require(channel["enabled"] if entering else
                   not channel["enabled"] and channel.get("maintenance") is True,

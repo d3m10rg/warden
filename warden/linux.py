@@ -173,7 +173,9 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
                 status, reason = "Unknown", "Interface observation unavailable"
             role = "Active" if active == item["id"] else "Standby" if status == "Healthy" and item["enabled"] else "None"
             if role != "Active" and not item["enabled"]:
-                role = "Retired" if item.get("retired") else "Maintenance" if item.get("maintenance") else "Disabled"
+                role = "Retired" if item.get("retired") else "Stopped" if item.get("stopped") else "Maintenance" if item.get("maintenance") else "Disabled"
+                if role == "Stopped":
+                    status, reason = ("Down", "Stopped by Warden; excluded from selection") if links is not None and link is None else ("Unknown", "Stopped flag; interface state differs or unavailable")
         else:
             recent = sum(r["health"] == "Recent handshake" for r in rows)
             status = "Observed" if recent else "Unknown"

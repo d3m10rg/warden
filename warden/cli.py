@@ -58,6 +58,10 @@ def parser():
     maintenance.add_argument("entity")
     maintenance.add_argument("state", choices=("on", "off"))
     maintenance.add_argument("--run", action="store_true")
+    for name in ("stop", "start"):
+        lifecycle = sub.add_parser(name, help="Preview AWG/transport Stop/Start of a Maintenance channel")
+        lifecycle.add_argument("entity")
+        lifecycle.add_argument("--run", action="store_true")
     clients = sub.add_parser("clients", help="Client menu; explicit VLESS subscription and credential operations")
     actions = clients.add_subparsers(dest="client_action")
     listing = actions.add_parser("list", help="Passive names-only list")
@@ -185,9 +189,9 @@ def main(argv=None):
         if args.database:
             cfg["database"] = str(Path(args.database).resolve())
         name = args.command or ("tui" if sys.stdin.isatty() and sys.stdout.isatty() else "status")
-        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor", "clients", "priority", "maintenance"):
+        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor", "clients", "priority", "maintenance", "stop", "start"):
             raise ValueError("Demo supports status/list/show/TUI only")
-        if name in ("priority", "maintenance"):
+        if name in ("priority", "maintenance", "stop", "start"):
             from .channel_admin import command
             return command(cfg, args)
         if name == "clients":

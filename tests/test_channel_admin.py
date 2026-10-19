@@ -108,7 +108,8 @@ class PriorityTests(unittest.TestCase):
         code = ("import sys,os; from warden import channel_admin as a; from warden.tui import run; "
                 "from warden.cli import demo; from warden.core import DEFAULTS; "
                 "a.plan=lambda cfg,e,r:dict(id=e,interface='awgfp0',old_rank=10,rank=r); "
-                "a.backend=lambda *args:([sys.executable,'-c',\"import time; time.sleep(0.8); print('TEST-PRIORITY-DONE')\"],dict(os.environ)); "
+                "a.lifecycle_plan=lambda cfg,e,act:dict(id=e,interface='awgfp0',action=act); "
+                "a.backend=lambda cfg,p:([sys.executable,'-c',\"import time; time.sleep(0.8); print('TEST-\"+p.get('action','PRIORITY')+\"-DONE')\"],dict(os.environ)); "
                 "run(demo(),dict(DEFAULTS,database=sys.argv[1]))")
         proc = subprocess.Popen([sys.executable, "-B", "-c", code, str(self.path)+".db"],
                                 stdin=slave, stdout=slave, stderr=slave, env=dict(os.environ, TERM="xterm-256color"))
@@ -134,6 +135,16 @@ class PriorityTests(unittest.TestCase):
             os.write(master, b"q1")  # Running transaction cannot be left/cancelled.
             until(b"TEST-PRIORITY-DONE")
             os.write(master, b"n")
+            time.sleep(0.2)
+            os.write(master, b"x")
+            until(b"persistent condition")
+            os.write(master, b"y")
+            until(b"TEST-stop-DONE")
+            os.write(master, b"n")
+            time.sleep(0.2)
+            os.write(master, b"s")
+            until(b"Start: restore")
+            os.write(master, b"n")  # Preview can be dismissed without running Start.
             time.sleep(0.2)
             os.write(master, b"q")
             proc.wait(timeout=8)

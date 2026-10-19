@@ -2,6 +2,7 @@
 import hashlib
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 
@@ -12,7 +13,20 @@ from .ssh_session import resolve as ssh_connection
 CTL = "/usr/local/sbin/forpostctl"
 
 
-def maintenance_plan(cfg, entity, state):
+def lifecycle_plan(cfg, entity, action):
+    p = maintenance_plan(cfg, entity, "off", allow_stopped=True)
+    row = next(r for r in channels(cfg)[1] if r["id"] == entity)
+    if action not in ("stop", "start") or row.get("stopped", False) is not (action == "start"):
+        raise ValueError("Channel is already stopped or not stopped by Warden")
+    if not re.fullmatch(r"awgfp[0-9]+", row["interface"]) or row["transport"] not in ("icmp", "faketcp", "wss"):
+        raise ValueError("Stop/Start supports only registered awgfp ICMP/fakeTCP/WSS channels")
+    if p["registry_sha256"] != hashlib.sha256(read_text(cfg["registry"]).encode()).hexdigest():
+        raise ValueError("Registry changed; preview again")
+    del p["state"]
+    return dict(p, action=action)
+
+
+def maintenance_plan(cfg, entity, state, allow_stopped=False):
     if cfg["registry"] != DEFAULTS["registry"] or state not in ("on", "off"):
         raise ValueError("Maintenance requires the standard registry and on/off state")
     raw = read_text(cfg["registry"])
@@ -22,6 +36,8 @@ def maintenance_plan(cfg, entity, state):
     row = next((r for r in rows if r["id"] == entity), None)
     if not row or row.get("retired"):
         raise ValueError("Choose a non-retired Forpost channel; permanent tunnels are not managed")
+    if row.get("stopped") and not allow_stopped:
+        raise ValueError("Channel is stopped; Start it before leaving Maintenance")
     if state == "on":
         if not row["enabled"]:
             raise ValueError("Channel is already excluded; no Maintenance operation started")
@@ -30,7 +46,7 @@ def maintenance_plan(cfg, entity, state):
     else:
         if not row.get("maintenance"):
             raise ValueError("Channel was not put into Maintenance by Warden")
-        if any(r["enabled"] and r["id"] != entity and r["rank"] == row["rank"] for r in rows):
+        if not allow_stopped and any(r["enabled"] and r["id"] != entity and r["rank"] == row["rank"] for r in rows):
             raise ValueError("Priority is now occupied; resolve rank conflict before returning channel")
     return {"id": entity, "interface": row["interface"], "state": state,
             "registry_sha256": hashlib.sha256(raw.encode()).hexdigest()}
@@ -57,6 +73,13 @@ def plan(cfg, entity, rank):
 
 
 def format_plan(p):
+    if "action" in p:
+        return [f"Channel: {p['id']} / {p['interface']} | {p['action'].capitalize()}",
+                "Requires Maintenance and a freshly verified healthy current exit through another channel.",
+                "Stop: stop this AWG and transport; persistent condition prevents automatic/boot restart.",
+                "Start: restore this transport, AWG and probe routes; verify HTTPS; remain in Maintenance.",
+                "Config files, keys, unit enablement, other channels and VLESS clients are preserved.",
+                "Installed forpostctl owns SSH protection, shared lock, manifest and rollback."]
     if "state" in p:
         return [f"Channel: {p['id']} / {p['interface']} | Maintenance: {p['state']}",
                 "On: exclude from selection only with a freshly verified healthy alternative.",
@@ -72,7 +95,8 @@ def format_plan(p):
 
 
 def backend(cfg, expected):
-    current = (maintenance_plan(cfg, expected["id"], expected["state"]) if "state" in expected else
+    current = (lifecycle_plan(cfg, expected["id"], expected["action"]) if "action" in expected else
+               maintenance_plan(cfg, expected["id"], expected["state"]) if "state" in expected else
                plan(cfg, expected["id"], expected["rank"]))
     if current != expected:
         raise ValueError("Registry changed since preview; review a new plan")
@@ -83,6 +107,9 @@ def backend(cfg, expected):
     connection = ssh_connection()
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            "LANG": "C.UTF-8", "SSH_CONNECTION": connection}
+    if "action" in expected:
+        return [sys.executable, "-B", str(Path(__file__).with_name("lifecycle_backend.py")),
+                "--id", expected["id"], "--action", expected["action"], "--expected", expected["registry_sha256"]], env
     if "state" in expected:
         return [sys.executable, "-B", str(Path(__file__).with_name("maintenance_backend.py")),
                 "--id", expected["id"], "--state", expected["state"], "--expected", expected["registry_sha256"]], env
@@ -94,7 +121,8 @@ def start(cfg, expected):
 
 
 def command(cfg, args):
-    p = (maintenance_plan(cfg, args.entity, args.state) if args.command == "maintenance" else
+    p = (lifecycle_plan(cfg, args.entity, args.command) if args.command in ("stop", "start") else
+         maintenance_plan(cfg, args.entity, args.state) if args.command == "maintenance" else
          plan(cfg, args.entity, args.rank))
     print("\n".join(format_plan(p)), flush=True)
     if not args.run:
@@ -116,15 +144,15 @@ def command(cfg, args):
 
 
 class PriorityView:
-    def __init__(self, cfg, entity, demo=False, maintenance=None):
+    def __init__(self, cfg, entity, demo=False, maintenance=None, lifecycle=None):
         self.cfg, self.entity = cfg, entity
         self.mode, self.text, self.rows = "input", "", []
         self.operation, self.pending = None, None
         if demo:
             self.mode, self.rows = "result", ["DEMO: channel administration disabled."]
-        elif maintenance is not None:
+        elif maintenance is not None or lifecycle is not None:
             try:
-                self.pending = maintenance_plan(cfg, entity, maintenance)
+                self.pending = lifecycle_plan(cfg, entity, lifecycle) if lifecycle else maintenance_plan(cfg, entity, maintenance)
                 backend(cfg, self.pending)
                 self.rows, self.mode = format_plan(self.pending), "confirm"
             except (OSError, ValueError) as exc:

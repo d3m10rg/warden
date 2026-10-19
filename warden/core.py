@@ -121,6 +121,7 @@ def channels(cfg):
                        "rank": rank, "enabled": enabled and not item.get("retired", False),
                        "retired": item.get("retired", False),
                        "maintenance": item.get("maintenance") is True and not enabled and not item.get("retired", False),
+                       "stopped": item.get("stopped") is True and item.get("maintenance") is True and not enabled and not item.get("retired", False),
                        "transport": transport,
                        "note": cfg["notes"].get(key, ""),
                        "table": item.get("table"), "mark": item.get("mark")})

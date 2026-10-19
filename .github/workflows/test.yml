@@ -18,6 +18,8 @@ jobs:
         run: sudo $(which python) -B -m unittest discover -s tests -p test_diagnostics.py -v
       - name: Forward pagination against real journald
         run: sudo $(which python) -B -m unittest discover -s tests -p test_journal.py -v
+      - name: Lifecycle routes in an isolated namespace
+        run: sudo $(which python) -B -m unittest discover -s tests -p test_lifecycle.py -v
       - run: sh -n install.sh
       - run: sh -n helpers/manage-ravelin-vless-ws-users.sh
       - run: systemd-analyze verify systemd/warden-collector.service

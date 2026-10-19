@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.0
+
+- Explicit CLI Stop/Start and Tunnels x/s confirmation panels for registered
+  ICMP/fakeTCP/WSS channels already in Maintenance; fresh healthy current exit required.
+- Stop preserves unit enablement/configs and uses persistent per-unit conditions
+  to prevent controller Wants and reboot from restarting the excluded channel.
+- Start restores only its transport, AWG, link-dependent probe routes and source
+  mark, verifies HTTPS, and keeps Maintenance until a separate return to selection.
+- Installed forpostctl journal/lock/SSH baseline and rollback handle failures;
+  reject changed profiles/units, foreign service dependencies, AWG hooks and custom routes.
+- Stopped/Down observation; collector, database schema and VPN installation unchanged.
+
 ## 0.2.1
 
 - Fix journal direction: `--grep` with `-n 500` implicitly reversed results.

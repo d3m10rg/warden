@@ -299,7 +299,7 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
             stdscr.erase()
             footer_message = message
             if tab == 1:
-                footer_message = "p: priority | m: Maintenance | Enter: details"
+                footer_message = "p: priority | m: Maintenance | x: Stop | s: Start"
             if priority_view:
                 footer_message = "Operation running; wait" if priority_view.operation else "PgUp/PgDn: scroll | Esc: return"
             if tab == 7:
@@ -338,12 +338,13 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
                     if clients_view.mode != "list":
                         offset = clients_view.offset
                     continue
-            if tab == 1 and key in (ord('p'), ord('m')) and priority_view is None:
+            if tab == 1 and key in (ord('p'), ord('m'), ord('x'), ord('s')) and priority_view is None:
                 if child is None and data["tunnels"]:
                     from .channel_admin import PriorityView
                     row = data["tunnels"][selected]
                     maintenance = ("off" if row.get("maintenance") else "on") if key == ord('m') else None
-                    priority_view = PriorityView(cfg, row["id"], demo_mode, maintenance)
+                    lifecycle = "stop" if key == ord('x') else "start" if key == ord('s') else None
+                    priority_view = PriorityView(cfg, row["id"], demo_mode, maintenance, lifecycle)
                     offset, cached_key = 0, None
                 continue
             if key in (ord('q'), ord('Q')):
