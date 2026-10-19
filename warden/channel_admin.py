@@ -7,6 +7,7 @@ import sys
 
 from .core import DEFAULTS, channels, read_text
 from .clients import Operation
+from .ssh_session import resolve as ssh_connection
 
 CTL = "/usr/local/sbin/forpostctl"
 
@@ -47,9 +48,7 @@ def backend(cfg, expected):
         raise ValueError("Channel administration requires root on Linux")
     if not Path(CTL).is_file() or not os.access(CTL, os.X_OK):
         raise ValueError("Installed /usr/local/sbin/forpostctl unavailable; inspect its installation first")
-    connection = os.environ.get("SSH_CONNECTION", "")
-    if len(connection.split()) != 4:
-        raise ValueError("SSH_CONNECTION missing; run Warden in the original SSH session for backend SSH-route protection")
+    connection = ssh_connection()
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            "LANG": "C.UTF-8", "SSH_CONNECTION": connection}
     return [CTL, "set-priority", "--id", expected["id"], "--priority", str(expected["rank"]), "--apply"], env

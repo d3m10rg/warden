@@ -65,8 +65,8 @@ class PriorityTests(unittest.TestCase):
             argv, env = a.backend(self.cfg, p)
             self.assertEqual(argv, [a.CTL, "set-priority", "--id", "primary", "--priority", "15", "--apply"])
             self.assertEqual(env["SSH_CONNECTION"], os.environ["SSH_CONNECTION"])
-            with patch.dict(os.environ, SSH_CONNECTION=""):
-                with self.assertRaisesRegex(ValueError, "SSH_CONNECTION"):
+            with patch.object(a, "ssh_connection", side_effect=ValueError("SSH connection unavailable")):
+                with self.assertRaisesRegex(ValueError, "SSH connection"):
                     a.backend(self.cfg, p)
 
     def test_ui_confirm_cancel_and_inflight_protection(self):
