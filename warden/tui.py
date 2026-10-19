@@ -188,6 +188,7 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
     child = None
     from .clients_view import ClientsView
     clients_view = ClientsView(cfg, demo_mode)
+    priority_view = None
 
     def cancel_child():
         nonlocal child
@@ -202,7 +203,7 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
             child = None
 
     def screen(stdscr):
-        nonlocal data, child
+        nonlocal data, child, priority_view
         curses.curs_set(0)
         stdscr.keypad(True)
         stdscr.timeout(200)
@@ -240,6 +241,8 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
             now = time.monotonic()
             if clients_view.poll():
                 cached_key, offset = None, 0
+            if priority_view and priority_view.poll():
+                cached_key, offset = None, 0
             if child is not None and child.poll() is not None:
                 stdout, stderr = child.communicate()
                 child = None
@@ -274,7 +277,9 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
             key = (data["timestamp"], tab, selected, detail, int(now / 10), columns)
             if key != cached_key:
                 try:
-                    if tab == 7:
+                    if priority_view:
+                        lines = priority_view.render(columns)
+                    elif tab == 7:
                         if clients_view.mode == "list":
                             clients_view.refresh()
                         lines = clients_view.render(columns)
@@ -286,13 +291,17 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
                     lines = panel("NOTICE", ["History unavailable; check collector status and permissions."], columns)
                 cached_key = key
             capacity = max(1, height-8)
-            if tab == 1 and not detail:
+            if tab == 1 and not detail and priority_view is None:
                 offset = max(min(offset, selected+3), selected+4-capacity)
             if tab == 7 and clients_view.mode == "list":
                 offset = max(min(offset, clients_view.selected+3), clients_view.selected+4-capacity)
             offset = min(max(0, offset), max(0, len(lines)-capacity))
             stdscr.erase()
             footer_message = message
+            if tab == 1:
+                footer_message = "Enter: details | p: priority | Up/Down: select"
+            if priority_view:
+                footer_message = "Operation running; wait" if priority_view.operation else "PgUp/PgDn: scroll | Esc: return"
             if tab == 7:
                 footer_message = ("Up/Down: select | Enter/s: links | a/r/d: manage" if clients_view.mode == "list" else
                                   "Operation running; wait for completion" if clients_view.operation else
@@ -309,20 +318,32 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
                     pass
             stdscr.refresh()
             key = stdscr.getch()
-            if tab == 7:
+            if tab == 7 or priority_view:
                 event = {27: "ESC", 10: "ENTER", 13: "ENTER", curses.KEY_ENTER: "ENTER",
                          curses.KEY_UP: "UP", curses.KEY_DOWN: "DOWN", curses.KEY_PPAGE: "PGUP",
                          curses.KEY_NPAGE: "PGDN", curses.KEY_LEFT: "LEFT", curses.KEY_RIGHT: "RIGHT",
                          9: "TAB", curses.KEY_BACKSPACE: "BACKSPACE", 127: "BACKSPACE", 8: "BACKSPACE"}.get(
                              key, chr(key) if 0 <= key <= 255 else "")
-                if child is not None and event in ("ENTER", "s", "a", "r", "d", "y"):
+                if priority_view:
+                    if key != -1 and priority_view.handle(event):
+                        cached_key = None
+                        if priority_view.mode == "closed":
+                            priority_view, offset = None, 0
+                        continue
+                elif child is not None and event in ("ENTER", "s", "a", "r", "d", "y"):
                     message = "Wait for diagnostic completion or cancel with Esc"
                     continue
-                if key != -1 and clients_view.handle(event):
+                elif key != -1 and clients_view.handle(event):
                     cached_key = None
                     if clients_view.mode != "list":
                         offset = clients_view.offset
                     continue
+            if tab == 1 and key == ord('p') and priority_view is None:
+                if child is None and data["tunnels"]:
+                    from .channel_admin import PriorityView
+                    priority_view = PriorityView(cfg, data["tunnels"][selected]["id"], demo_mode)
+                    offset, cached_key = 0, None
+                continue
             if key in (ord('q'), ord('Q')):
                 break
             if key == 27:
@@ -365,7 +386,7 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
             elif key in (curses.KEY_NPAGE, curses.KEY_PPAGE):
                 offset = max(0, offset + (1 if key == curses.KEY_NPAGE else -1) * capacity)
     def interrupt(*_):
-        if clients_view.operation is None:
+        if clients_view.operation is None and not (priority_view and priority_view.operation):
             raise KeyboardInterrupt()
 
     signals = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
@@ -378,6 +399,8 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
         # Never terminate the client backend on Esc, resize, Ctrl-C or TUI error.
         if clients_view.operation:
             clients_view.operation.wait()
+        if priority_view and priority_view.operation:
+            priority_view.operation.wait()
         clients_view.reset()
         cancel_child()
         for sig, handler in previous.items():

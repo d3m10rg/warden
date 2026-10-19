@@ -116,8 +116,8 @@ class Operation:
     """Drain a non-cancellable backend into bounded RAM, never the curses TTY."""
     LIMIT = 256 * 1024
 
-    def __init__(self, cfg, action, name):
-        argv, env = backend(cfg, action, name)
+    def __init__(self, cfg, action, name, command=None):
+        argv, env = command if command is not None else backend(cfg, action, name)
         self.output = bytearray()
         self.truncated = False
         self.returncode = None

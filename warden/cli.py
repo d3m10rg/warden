@@ -50,6 +50,10 @@ def parser():
             cmd.add_argument("--once", action="store_true")
     doc = sub.add_parser("doctor", help="Passive allowlisted report, without addresses or credentials")
     doc.add_argument("--json", action="store_true")
+    priority = sub.add_parser("priority", help="Preview a Forpost priority change via installed forpostctl")
+    priority.add_argument("entity")
+    priority.add_argument("rank", type=int)
+    priority.add_argument("--run", action="store_true")
     clients = sub.add_parser("clients", help="Client menu; explicit VLESS subscription and credential operations")
     actions = clients.add_subparsers(dest="client_action")
     listing = actions.add_parser("list", help="Passive names-only list")
@@ -177,8 +181,11 @@ def main(argv=None):
         if args.database:
             cfg["database"] = str(Path(args.database).resolve())
         name = args.command or ("tui" if sys.stdin.isatty() and sys.stdout.isatty() else "status")
-        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor", "clients"):
+        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor", "clients", "priority"):
             raise ValueError("Demo supports status/list/show/TUI only")
+        if name == "priority":
+            from .channel_admin import command
+            return command(cfg, args)
         if name == "clients":
             from .clients import command
             return command(cfg, args)
