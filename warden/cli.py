@@ -54,6 +54,10 @@ def parser():
     priority.add_argument("entity")
     priority.add_argument("rank", type=int)
     priority.add_argument("--run", action="store_true")
+    maintenance = sub.add_parser("maintenance", help="Preview exclusion from selection or return via installed backend")
+    maintenance.add_argument("entity")
+    maintenance.add_argument("state", choices=("on", "off"))
+    maintenance.add_argument("--run", action="store_true")
     clients = sub.add_parser("clients", help="Client menu; explicit VLESS subscription and credential operations")
     actions = clients.add_subparsers(dest="client_action")
     listing = actions.add_parser("list", help="Passive names-only list")
@@ -181,9 +185,9 @@ def main(argv=None):
         if args.database:
             cfg["database"] = str(Path(args.database).resolve())
         name = args.command or ("tui" if sys.stdin.isatty() and sys.stdout.isatty() else "status")
-        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor", "clients", "priority"):
+        if args.demo and name in ("collect", "traffic", "history", "ping", "https", "speed", "doctor", "clients", "priority", "maintenance"):
             raise ValueError("Demo supports status/list/show/TUI only")
-        if name == "priority":
+        if name in ("priority", "maintenance"):
             from .channel_admin import command
             return command(cfg, args)
         if name == "clients":

@@ -34,10 +34,10 @@ def age_line(data):
 
 
 def tunnel_table(data, selected=None):
-    lines = ["  ID               Interface    Role     Health      RX bit/s      TX bit/s"]
+    lines = ["  ID               Interface    Role        Health      RX bit/s      TX bit/s"]
     for index, row in enumerate(data["tunnels"]):
         cursor = ">" if index == selected else " "
-        lines.append(f"{cursor} {row['id'][:16]:16} {row['interface'][:12]:12} {row['role'][:8]:8} {row['health'][:11]:11} {amount(row.get('rx_bps'), 'b/s'):>12} {amount(row.get('tx_bps'), 'b/s'):>12}")
+        lines.append(f"{cursor} {row['id'][:16]:16} {row['interface'][:12]:12} {row['role'][:11]:11} {row['health'][:11]:11} {amount(row.get('rx_bps'), 'b/s'):>12} {amount(row.get('tx_bps'), 'b/s'):>12}")
     return lines
 
 
@@ -99,11 +99,11 @@ def panel(title, rows, width):
 
 
 def compact_tunnels(data, selected=None):
-    rows = ["  Tunnel       Interface  Role    Health        RX bit/s    TX bit/s",
-            "  ------------ ---------- ------- ----------- ----------- -----------"]
+    rows = ["  Tunnel       Interface  Role        Health        RX bit/s    TX bit/s",
+            "  ------------ ---------- ----------- ----------- ----------- -----------"]
     for i, r in enumerate(data["tunnels"]):
         rows.append(f"{'>' if selected == i else ' '} {r['id'][:12]:12} {r['interface'][:10]:10} "
-                    f"{r['role'][:7]:7} {r['health'][:11]:11} {amount(r.get('rx_bps'), 'b/s'):>11} {amount(r.get('tx_bps'), 'b/s'):>11}")
+                    f"{r['role'][:11]:11} {r['health'][:11]:11} {amount(r.get('rx_bps'), 'b/s'):>11} {amount(r.get('tx_bps'), 'b/s'):>11}")
     return rows
 
 
@@ -299,7 +299,7 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
             stdscr.erase()
             footer_message = message
             if tab == 1:
-                footer_message = "Enter: details | p: priority | Up/Down: select"
+                footer_message = "p: priority | m: Maintenance | Enter: details"
             if priority_view:
                 footer_message = "Operation running; wait" if priority_view.operation else "PgUp/PgDn: scroll | Esc: return"
             if tab == 7:
@@ -338,10 +338,12 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
                     if clients_view.mode != "list":
                         offset = clients_view.offset
                     continue
-            if tab == 1 and key == ord('p') and priority_view is None:
+            if tab == 1 and key in (ord('p'), ord('m')) and priority_view is None:
                 if child is None and data["tunnels"]:
                     from .channel_admin import PriorityView
-                    priority_view = PriorityView(cfg, data["tunnels"][selected]["id"], demo_mode)
+                    row = data["tunnels"][selected]
+                    maintenance = ("off" if row.get("maintenance") else "on") if key == ord('m') else None
+                    priority_view = PriorityView(cfg, row["id"], demo_mode, maintenance)
                     offset, cached_key = 0, None
                 continue
             if key in (ord('q'), ord('Q')):

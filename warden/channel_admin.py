@@ -12,6 +12,30 @@ from .ssh_session import resolve as ssh_connection
 CTL = "/usr/local/sbin/forpostctl"
 
 
+def maintenance_plan(cfg, entity, state):
+    if cfg["registry"] != DEFAULTS["registry"] or state not in ("on", "off"):
+        raise ValueError("Maintenance requires the standard registry and on/off state")
+    raw = read_text(cfg["registry"])
+    version, rows = channels(cfg)
+    if version != "registry-v2" or raw != read_text(cfg["registry"]):
+        raise ValueError("Registry unavailable or changed; preview again")
+    row = next((r for r in rows if r["id"] == entity), None)
+    if not row or row.get("retired"):
+        raise ValueError("Choose a non-retired Forpost channel; permanent tunnels are not managed")
+    if state == "on":
+        if not row["enabled"]:
+            raise ValueError("Channel is already excluded; no Maintenance operation started")
+        if not any(r["enabled"] and r["id"] != entity for r in rows):
+            raise ValueError("Refusing to exclude the last enabled channel")
+    else:
+        if not row.get("maintenance"):
+            raise ValueError("Channel was not put into Maintenance by Warden")
+        if any(r["enabled"] and r["id"] != entity and r["rank"] == row["rank"] for r in rows):
+            raise ValueError("Priority is now occupied; resolve rank conflict before returning channel")
+    return {"id": entity, "interface": row["interface"], "state": state,
+            "registry_sha256": hashlib.sha256(raw.encode()).hexdigest()}
+
+
 def plan(cfg, entity, rank):
     if cfg["registry"] != DEFAULTS["registry"]:
         raise ValueError("Administration requires the standard installed channel registry")
@@ -33,6 +57,13 @@ def plan(cfg, entity, rank):
 
 
 def format_plan(p):
+    if "state" in p:
+        return [f"Channel: {p['id']} / {p['interface']} | Maintenance: {p['state']}",
+                "On: exclude from selection only with a freshly verified healthy alternative.",
+                "If active, move egress to the healthy alternative; existing connections may be interrupted.",
+                "Off: verify this channel over HTTPS, re-enable; controller retains normal recovery hold.",
+                "AWG/WSS/ICMP services, configs, probe rules and VLESS credentials are preserved.",
+                "Installed forpostctl transaction backend owns shared lock, manifest and rollback."]
     return [f"Channel: {p['id']} / {p['interface']}", f"Priority: {p['old_rank']} -> {p['rank']} (lower is preferred)",
             "Backend: installed forpostctl set-priority; controller selects the egress.",
             "Selection may change after normal health/recovery checks; this is not an immediate switch.",
@@ -41,7 +72,8 @@ def format_plan(p):
 
 
 def backend(cfg, expected):
-    current = plan(cfg, expected["id"], expected["rank"])
+    current = (maintenance_plan(cfg, expected["id"], expected["state"]) if "state" in expected else
+               plan(cfg, expected["id"], expected["rank"]))
     if current != expected:
         raise ValueError("Registry changed since preview; review a new plan")
     if sys.platform != "linux" or os.geteuid() != 0:
@@ -51,6 +83,9 @@ def backend(cfg, expected):
     connection = ssh_connection()
     env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
            "LANG": "C.UTF-8", "SSH_CONNECTION": connection}
+    if "state" in expected:
+        return [sys.executable, "-B", str(Path(__file__).with_name("maintenance_backend.py")),
+                "--id", expected["id"], "--state", expected["state"], "--expected", expected["registry_sha256"]], env
     return [CTL, "set-priority", "--id", expected["id"], "--priority", str(expected["rank"]), "--apply"], env
 
 
@@ -59,7 +94,8 @@ def start(cfg, expected):
 
 
 def command(cfg, args):
-    p = plan(cfg, args.entity, args.rank)
+    p = (maintenance_plan(cfg, args.entity, args.state) if args.command == "maintenance" else
+         plan(cfg, args.entity, args.rank))
     print("\n".join(format_plan(p)), flush=True)
     if not args.run:
         print("PREVIEW ONLY: no backend commands run. Use --run to apply.")
@@ -80,12 +116,19 @@ def command(cfg, args):
 
 
 class PriorityView:
-    def __init__(self, cfg, entity, demo=False):
+    def __init__(self, cfg, entity, demo=False, maintenance=None):
         self.cfg, self.entity = cfg, entity
         self.mode, self.text, self.rows = "input", "", []
         self.operation, self.pending = None, None
         if demo:
             self.mode, self.rows = "result", ["DEMO: channel administration disabled."]
+        elif maintenance is not None:
+            try:
+                self.pending = maintenance_plan(cfg, entity, maintenance)
+                backend(cfg, self.pending)
+                self.rows, self.mode = format_plan(self.pending), "confirm"
+            except (OSError, ValueError) as exc:
+                self.mode, self.rows = "result", [str(exc) if type(exc) is ValueError else "Backend unavailable; check paths/permissions"]
 
     def poll(self):
         if self.operation and self.operation.done():
@@ -125,4 +168,5 @@ class PriorityView:
         rows = (["New priority: " + self.text + "_", "Lower is preferred. Enter: preview | Esc: cancel"] if self.mode == "input" else
                 ["Waiting for forpostctl to finish; operation cannot be cancelled halfway through."] if self.operation else
                 self.rows + ["", "y: apply | n/Esc: cancel" if self.mode == "confirm" else "Esc: return to tunnels"])
-        return panel("CHANNEL PRIORITY / " + self.entity + " / " + self.mode.upper(), rows, width)
+        title = "CHANNEL MAINTENANCE" if self.pending and "state" in self.pending else "CHANNEL ADMIN"
+        return panel(title + " / " + self.entity + " / " + self.mode.upper(), rows, width)

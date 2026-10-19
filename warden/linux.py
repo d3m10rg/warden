@@ -90,8 +90,8 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
     except (OSError, ValueError, TypeError):
         health = {}
         errors.append("Controller state unavailable/invalid")
-    transport_units = tuple("forpost-faketcp-" + p["interface"] + ".service" for p in paths
-                            if p.get("transport") in ("icmp", "faketcp") and
+    transport_units = tuple(("forpost-wss-" if p.get("transport") == "wss" else "forpost-faketcp-") + p["interface"] + ".service" for p in paths
+                            if p.get("transport") in ("icmp", "faketcp", "wss") and
                             re.fullmatch(r"awgfp[0-9]{1,8}", p["interface"]))
     unit_names = SERVICES + transport_units
     tasks = {
@@ -173,7 +173,7 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
                 status, reason = "Unknown", "Interface observation unavailable"
             role = "Active" if active == item["id"] else "Standby" if status == "Healthy" and item["enabled"] else "None"
             if role != "Active" and not item["enabled"]:
-                role = "Retired" if item.get("retired") else "Disabled"
+                role = "Retired" if item.get("retired") else "Maintenance" if item.get("maintenance") else "Disabled"
         else:
             recent = sum(r["health"] == "Recent handshake" for r in rows)
             status = "Observed" if recent else "Unknown"

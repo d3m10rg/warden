@@ -113,13 +113,14 @@ def channels(cfg):
             raise ValueError("invalid rank")
         raw_transport = item.get("transport")
         transport = "udp" if raw_transport is None else "unknown"
-        if isinstance(raw_transport, dict) and raw_transport.get("kind") in ("icmp", "faketcp"):
+        if isinstance(raw_transport, dict) and raw_transport.get("kind") in ("icmp", "faketcp", "wss"):
             transport = raw_transport["kind"]
         result.append({"id": key, "interface": interface,
                        "name": cfg["names"].get(key, clean(item.get("name", key))),
                        "peer": item["peer"], "local": item["local"], "public": item["public"],
                        "rank": rank, "enabled": enabled and not item.get("retired", False),
                        "retired": item.get("retired", False),
+                       "maintenance": item.get("maintenance") is True and not enabled and not item.get("retired", False),
                        "transport": transport,
                        "note": cfg["notes"].get(key, ""),
                        "table": item.get("table"), "mark": item.get("mark")})
