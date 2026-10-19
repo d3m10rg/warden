@@ -165,6 +165,127 @@ class LifecycleTests(unittest.TestCase):
     def invoke(self, action):
         b.lifecycle(self.ctl, self.args(action))
 
+    def icmp(self):
+        data = json.loads(self.registry.read_text())
+        data["channels"][1]["transport"]["kind"] = "icmp"
+        self.registry.write_text(json.dumps(data))
+        old = self.group[1]
+        self.group[1] = "forpost-faketcp-awgfp3.service"
+        self.states[self.group[1]] = self.states.pop(old)
+        self.states[self.group[1]]["Id"] = self.group[1]
+        self.states[self.group[0]]["Requires"] = self.group[1]
+        self.p.TARGETS = [("192.0.2." + str(i), "example.invalid", "/") for i in range(1, 4)]
+
+    def test_icmp_start_requires_explicit_coordination_before_mutation(self):
+        self.icmp()
+        self.invoke("stop")
+        count = len(self.commands)
+        with self.assertRaisesRegex(ValueError, "wait-for-server-reset"):
+            self.invoke("start")
+        self.assertEqual(count, len(self.commands))
+        self.assertFalse(self.up)
+        plan = a.lifecycle_plan(self.cfg, "reserve", "start")
+        with self.assertRaisesRegex(ValueError, "wait-for-server-reset"):
+            a.backend(self.cfg, plan)
+        self.assertIn("--wait-for-server-reset", " ".join(a.format_plan(plan)))
+
+    def test_icmp_waits_for_reset_then_requires_three_successes(self):
+        self.icmp()
+        self.invoke("stop")
+        now, calls = [0.0], []
+        def probe(c, target, deadline=None, observation=None):
+            self.assertLess(now[0], deadline)
+            self.assertLessEqual(deadline-now[0], 5)
+            now[0] += 1
+            calls.append(target)
+            observation.update(target=target[0], stage="tcp", reason="timeout", private="DO-NOT-LOG")
+            # Simulate a reset after one failed round; a partial round is insufficient.
+            return len(calls) > 3 and len(calls) != 5
+        self.p.probe_one = probe
+        args = self.args("start")
+        args.wait_for_server_reset = True
+        with patch.object(b.time, "monotonic", side_effect=lambda: now[0]), patch.object(b.time, "sleep", side_effect=lambda n: now.__setitem__(0, now[0]+n)):
+            b.lifecycle(self.ctl, args)
+        self.assertEqual(len(calls), 9)
+        self.assertTrue(self.up)
+        row = core.channels(self.cfg)[1][1]
+        self.assertTrue(row["maintenance"])
+        self.assertFalse(row["enabled"])
+        self.assertFalse(row["stopped"])
+        self.assertEqual(self.active, "primary")
+        text = " ".join(str(c) for c in self.ctl.say.call_args_list)
+        self.assertIn("Client AWG/transport ready", text)
+        self.assertNotIn("DO-NOT-LOG", text)
+        self.ctl.probe_candidate.assert_not_called()
+
+    def test_icmp_wait_timeout_rolls_back_to_stopped(self):
+        self.icmp()
+        self.invoke("stop")
+        original = self.registry.read_bytes()
+        now = [0.0]
+        def probe(c, target, deadline=None, observation=None):
+            now[0] = deadline  # Every probe exhausts its own bounded budget.
+            observation.update(target=target[0], stage="tls", reason="timeout")
+            return False
+        self.p.probe_one = probe
+        args = self.args("start")
+        args.wait_for_server_reset = True
+        with patch.object(b.time, "monotonic", side_effect=lambda: now[0]), patch.object(b.time, "sleep", side_effect=lambda n: now.__setitem__(0, now[0]+n)), self.assertRaisesRegex(ValueError, "server-reset wait"):
+            b.lifecycle(self.ctl, args)
+        self.assertEqual(now[0], 90)
+        self.assertFalse(self.up)
+        self.assertEqual(self.registry.read_bytes(), original)
+        self.assertTrue((b.STOP_DIR / "awgfp3").exists())
+        self.assertTrue(all(s["ActiveState"] == "inactive" for s in self.states.values()))
+
+    def test_icmp_wait_api_rejected_before_transaction(self):
+        self.icmp()
+        self.invoke("stop")
+        self.p.probe_one = lambda c, target: True
+        args = self.args("start")
+        args.wait_for_server_reset = True
+        with self.assertRaisesRegex(ValueError, "bounded startup"):
+            b.lifecycle(self.ctl, args)
+        self.assertFalse(self.up)
+        self.assertEqual(self.rollbacks, 0)
+
+    def test_interrupted_icmp_wait_restores_stopped_state(self):
+        self.icmp()
+        self.invoke("stop")
+        def probe(c, target, deadline=None, observation=None):
+            raise KeyboardInterrupt()
+        self.p.probe_one = probe
+        args = self.args("start")
+        args.wait_for_server_reset = True
+        with self.assertRaises(KeyboardInterrupt):
+            b.lifecycle(self.ctl, args)
+        self.assertFalse(self.up)
+        self.assertTrue((b.STOP_DIR / "awgfp3").exists())
+        self.assertTrue(core.channels(self.cfg)[1][1]["stopped"])
+
+    def test_icmp_tui_preview_explains_coordination_and_shows_live_wait(self):
+        self.icmp()
+        self.invoke("stop")
+        with patch.object(a, "backend"), patch.object(a, "start") as start:
+            view = a.PriorityView(self.cfg, "reserve", lifecycle="start")
+            self.assertEqual(view.mode, "confirm")
+            self.assertTrue(view.pending["wait_for_server_reset"])
+            self.assertIn("separate console", " ".join(view.render(100)))
+            view.handle("y")
+            start.assert_called_once()
+            start.return_value.done.return_value = False
+            start.return_value.progress.return_value = ["[WAIT] Client AWG/transport ready"]
+            self.assertTrue(view.poll())
+            self.assertIn("Client AWG/transport ready", " ".join(view.render(100)))
+            self.assertTrue(view.handle("q"))
+
+    def test_reset_option_rejected_for_other_operations(self):
+        with self.assertRaisesRegex(ValueError, "only for ICMP Start"):
+            a.lifecycle_plan(self.cfg, "reserve", "stop", True)
+        self.invoke("stop")
+        with self.assertRaisesRegex(ValueError, "only for ICMP Start"):
+            a.lifecycle_plan(self.cfg, "reserve", "start", True)
+
     def test_stop_survives_controller_wants_and_start_keeps_maintenance(self):
         original = self.config.read_bytes()
         self.invoke("stop")

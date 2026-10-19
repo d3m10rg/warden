@@ -136,6 +136,28 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(len(job.output), job.LIMIT)
             self.assertTrue(job.truncated)
 
+    def test_operation_progress_arrives_before_child_finishes(self):
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            release = Path(tmp) / "release"
+            code = ("import sys,time; from pathlib import Path; print('[WAIT] READY',flush=True); "
+                    "release=Path(sys.argv[1]);\nwhile not release.exists(): time.sleep(0.02)\nprint('DONE')")
+            job = clients.Operation(core.DEFAULTS, "priority", "test", command=(
+                [sys.executable, "-B", "-c", code, str(release)], dict(os.environ)))
+            try:
+                deadline = time.monotonic()+5
+                while not job.progress() and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertEqual(job.progress(), ["[WAIT] READY"])
+                self.assertFalse(job.done())
+            finally:
+                release.touch()
+                job.wait(5)
+                if not job.done():
+                    job.process.kill()
+                    job.wait()
+            self.assertEqual(job.result(), ["[WAIT] READY", "DONE"])
+
     def test_template_env_is_rejected_before_execution(self):
         with patch.object(clients, "preview"), patch.object(clients.sys, "platform", "linux"), \
              patch.object(clients.os, "geteuid", return_value=0, create=True), \

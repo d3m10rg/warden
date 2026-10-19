@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.1
+
+- Require explicit `--wait-for-server-reset` for ICMP Start; preflight the bounded
+  probe API before mutations. TUI Start explains and confirms the same coordination.
+- After local startup, prompt for a manual reset of only the selected server's
+  udp2raw transport; wait up to 90 seconds for HTTPS 3/3 with five-second probes.
+  Timeout/interruption rolls back local startup; no remote commands are executed.
+- Stream backend output while CLI/TUI operations run, so the reset prompt arrives
+  before the wait expires. Include bounded probe diagnostics and clarify failure output.
+
 ## 0.6.0
 
 - Explicit CLI Stop/Start and Tunnels x/s confirmation panels for registered

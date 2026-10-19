@@ -118,6 +118,7 @@ class Operation:
 
     def __init__(self, cfg, action, name, command=None):
         argv, env = command if command is not None else backend(cfg, action, name)
+        self.administrative = command is not None
         self.output = bytearray()
         self.truncated = False
         self.returncode = None
@@ -131,7 +132,7 @@ class Operation:
         try:
             with self.process.stdout as stream:
                 while True:
-                    chunk = stream.read(4096)
+                    chunk = stream.read1(4096)
                     if not chunk:
                         break
                     remaining = self.LIMIT - len(self.output)
@@ -143,15 +144,23 @@ class Operation:
     def done(self):
         return not self.thread.is_alive()
 
-    def wait(self):
-        self.thread.join()
+    def wait(self, timeout=None):
+        self.thread.join(timeout)
+
+    def progress(self):
+        content = bytes(self.output)
+        # Complete lines only, so callers can append without duplicate fragments.
+        end = content.rfind(b"\n")
+        return content[:end+1].decode("utf-8", errors="replace").splitlines() if end >= 0 else []
 
     def result(self):
         rows = self.output.decode("utf-8", errors="replace").splitlines()
         if self.truncated:
-            rows += ["Output truncated; request one client's links using the CLI."]
+            rows += ["Output truncated; inspect backend manifest." if self.administrative else
+                     "Output truncated; request one client's links using the CLI."]
         if self.returncode:
-            rows += ["Failed: some changes may already have applied. Inspect service state before retrying."]
+            rows += ["Failed; see backend rollback/manifest result above. Check current state before retrying." if self.administrative else
+                     "Failed: some changes may already have applied. Inspect service state before retrying."]
         return rows or ["Operation completed."]
 
 

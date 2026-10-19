@@ -62,6 +62,9 @@ def parser():
         lifecycle = sub.add_parser(name, help="Preview AWG/transport Stop/Start of a Maintenance channel")
         lifecycle.add_argument("entity")
         lifecycle.add_argument("--run", action="store_true")
+        if name == "start":
+            lifecycle.add_argument("--wait-for-server-reset", action="store_true",
+                                   help="ICMP: wait up to 90s for a manual server transport restart and HTTPS 3/3")
     clients = sub.add_parser("clients", help="Client menu; explicit VLESS subscription and credential operations")
     actions = clients.add_subparsers(dest="client_action")
     listing = actions.add_parser("list", help="Passive names-only list")

@@ -1,6 +1,7 @@
 """Stop/start one Maintenance channel through the installed transaction journal."""
 import argparse
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import re
 import shlex
 import signal
 import sys
+import time
 
 if __package__:
     from .maintenance_backend import guard, load_backend
@@ -16,6 +18,7 @@ else:
 
 STOP_DIR = Path("/etc/warden/stopped")
 UNIT_DIR = Path("/etc/systemd/system")
+RESET_WINDOW = 90
 PROPERTIES = ("Id", "LoadState", "ActiveState", "Requires", "Wants", "RequiredBy", "BoundBy",
               "PartOf", "BindsTo", "ConsistsOf", "Conflicts", "PropagatesStopTo", "StopWhenUnneeded",
               "FragmentPath", "DropInPaths")
@@ -106,6 +109,32 @@ def route_commands(p, c):
     return expected
 
 
+def wait_for_https(ctl, c, active):
+    p = ctl.p
+    deadline = time.monotonic() + RESET_WINDOW
+    ctl.say("WAIT", "Client AWG/transport ready. In the selected Forpost console restart ONLY its udp2raw transport now; "
+            "leave server AWG and this Ravelin session running. Up to 90s for HTTPS 3/3.")
+    while True:
+        p.require(p.active_route() == active, "Active exit changed during startup wait")
+        guard(p)
+        results, details = [], []
+        for target in p.TARGETS:
+            if time.monotonic() >= deadline:
+                results.append(False)
+                continue
+            observed = {}
+            results.append(p.probe_one(c, target, deadline=min(deadline, time.monotonic() + 5), observation=observed))
+            # Project fixed fields only; no exception/config/credential text.
+            details.append({k: observed[k] for k in ("target", "stage", "reason", "elapsed_ms") if k in observed})
+        ctl.say("CHECK", "HTTPS " + c["id"] + ": " + json.dumps(results) + "; probes=" + json.dumps(details))
+        p.require(p.active_route() == active, "Active exit changed during startup wait")
+        if len(results) == 3 and all(results):
+            return
+        remaining = deadline - time.monotonic()
+        p.require(remaining > 0, "ICMP startup HTTPS acceptance failed after server-reset wait; rolling back to Stopped")
+        time.sleep(min(2, remaining))
+
+
 def lifecycle(ctl, args):
     p = ctl.p
     for name in ("probe_reply_change",):
@@ -119,6 +148,17 @@ def lifecycle(ctl, args):
                   "Stop/Start requires a non-retired channel already in Maintenance")
         p.require(c.get("stopped", False) is (not stopping), "Channel stopped state changed; preview again")
         group = units(p, c)
+        coordinated = not stopping and c["transport"]["kind"] == "icmp"
+        wait = getattr(args, "wait_for_server_reset", False)
+        p.require(not coordinated or wait, "ICMP Start requires --wait-for-server-reset and a ready Forpost console; no changes made")
+        p.require(not wait or coordinated, "Server-reset wait is supported only for ICMP Start")
+        if coordinated:
+            p.require(len(p.TARGETS) == 3, "Expected three backend HTTPS targets")
+            # Refuse older API before opening a transaction or starting services.
+            try:
+                inspect.signature(p.probe_one).bind(c, p.TARGETS[0], deadline=0, observation={})
+            except TypeError:
+                raise ValueError("Installed probe API lacks bounded startup diagnostics; no changes made") from None
         marker = STOP_DIR / c["if"]
         secure(p, marker)
         p.require(marker.exists() is (not stopping), "Persistent stop marker missing or unexpected")
@@ -171,7 +211,10 @@ def lifecycle(ctl, args):
                                [["ip", "-4", "route", "del", c["peer"] + "/32", "dev", c["if"], "table", str(table)]])
                 tx.command(p.expected_default(c, c["table"]), [p.delete_default(c, c["table"])])
                 ctl.probe_reply_change(tx, c)
-                ctl.probe_candidate(c)
+                if coordinated:
+                    wait_for_https(ctl, c, active)
+                else:
+                    ctl.probe_candidate(c)
             p.require(p.interface_exists(c["if"]) is (not stopping), "Interface state did not change as expected")
             for unit in group:
                 p.require(unit_state(p, unit).get("ActiveState") == ("inactive" if stopping else "active"), "Unit transition incomplete")
@@ -192,6 +235,7 @@ def main():
     parser.add_argument("--id", required=True)
     parser.add_argument("--action", choices=("stop", "start"), required=True)
     parser.add_argument("--expected", required=True)
+    parser.add_argument("--wait-for-server-reset", action="store_true")
     args = parser.parse_args()
     args.ssh_client, args.console = None, False
     if sys.platform != "linux" or os.geteuid() != 0:
