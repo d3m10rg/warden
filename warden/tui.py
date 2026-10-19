@@ -376,7 +376,7 @@ def run(data, cfg, demo_mode=False, config_path="/etc/warden/config.json", initi
                 detail, offset = not detail, 0
             elif key in (curses.KEY_DOWN, curses.KEY_UP):
                 step = 1 if key == curses.KEY_DOWN else -1
-                if not detail and tab in (1, 4, 6):
+                if not detail and tab in (1, 4, 6) and priority_view is None:
                     selected = max(0, min(len(data["tunnels"])-1, selected+step))
                     pending = None
                     if child is None:
