@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.2
+
+- Show Starting/Stopping and the ICMP Waiting for server phase in passive CLI/TUI
+  observations and live backend output, without changing registry selection flags.
+- Use ephemeral root-owned /run records tied to PID, process start ticks and boot;
+  ignore dead/reused processes and malformed records. Progress IO cannot block rollback.
+- Keep an actual Active kernel route visible over operation metadata. Database
+  schema, collector sandbox, transport startup and controller behavior are unchanged.
+- Record completed Ravelin acceptance and outstanding pre-1.0 checks separately.
+
 ## 0.6.1
 
 - Require explicit `--wait-for-server-reset` for ICMP Start; preflight the bounded

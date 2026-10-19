@@ -228,8 +228,11 @@ class PriorityView:
 
     def render(self, width):
         from .tui import panel
+        phase = next((r for r in reversed(self.rows) if r in
+                      ("[STATE] Starting", "[STATE] Stopping", "[STATE] Waiting for server")), None)
         rows = (["New priority: " + self.text + "_", "Lower is preferred. Enter: preview | Esc: cancel"] if self.mode == "input" else
-                ["Waiting for forpostctl; operation cannot be cancelled halfway through."] + self.instructions + self.rows[-8:] if self.operation else
+                ["Waiting for forpostctl; operation cannot be cancelled halfway through."] +
+                ([phase] if phase else []) + self.instructions + self.rows[-8:] if self.operation else
                 self.rows + ["", "y: apply | n/Esc: cancel" if self.mode == "confirm" else "Esc: return to tunnels"])
         title = "CHANNEL MAINTENANCE" if self.pending and "state" in self.pending else "CHANNEL ADMIN"
         return panel(title + " / " + self.entity + " / " + self.mode.upper(), rows, width)

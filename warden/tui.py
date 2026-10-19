@@ -41,12 +41,16 @@ def tunnel_table(data, selected=None):
     return lines
 
 
+def operation_lines(data):
+    return [f"{r['id']}: {r['role']} / {r['operation_phase']}" for r in data["tunnels"] if r.get("operation_phase")]
+
+
 def overview(data):
     controller = data["controller"]
     return [f"WARDEN {__version__} | READ ONLY | {age_line(data)}",
             f"Egress: {controller['active']} | Controller: {controller['version']} | probes fresh: {controller['fresh']}",
             f"Guards: unreachable={controller.get('unreachable_guard')} local-source-rule={controller.get('local_source_rule')}",
-            "", *tunnel_table(data), "", "Services:",
+            "", *tunnel_table(data), *operation_lines(data), "", "Services:",
             *[f"  {row['id']}: {row['state']}" for row in data["services"]],
             "", *["! " + warning for warning in data["warnings"]]]
 
@@ -62,6 +66,8 @@ def details(row):
              " | enabled=" + str(row.get("enabled", "N/A")) + " | retired=" + str(row.get("retired", "N/A")),
              f"Interface totals RX={amount(row.get('rx'))} TX={amount(row.get('tx'))}",
              "", "Peers (handshake is not an end-to-end health check):"]
+    if row.get("operation_phase"):
+        lines.insert(3, "Operation: " + row["operation_phase"])
     for probe in row.get("probe_details", []):
         lines += [f"Controller probe ({'fresh' if row.get('probes_fresh') else 'STALE'}): "
                   f"{probe['target']} | {probe['stage']} / {probe['reason']} | {probe['elapsed_ms']} ms"]
@@ -110,6 +116,7 @@ def compact_tunnels(data, selected=None):
 def page_lines(data, tab, selected, cfg, detail=False, demo_mode=False, width=100):
     tunnels = data["tunnels"]
     row = tunnels[min(selected, len(tunnels)-1)] if tunnels else None
+    operations = panel("CHANNEL OPERATIONS", operation_lines(data), width) if operation_lines(data) else []
     if detail and row:
         return panel("TUNNEL / " + row["id"], details(row), width)
     if tab == 0:
@@ -117,11 +124,11 @@ def page_lines(data, tab, selected, cfg, detail=False, demo_mode=False, width=10
         return (panel("EGRESS / CONTROLLER", [
             f"Active: {c['active']}    Backend: {c['version']}    Probes fresh: {c['fresh']}",
             f"Unreachable guard: {c.get('unreachable_guard')}    Local source rule: {c.get('local_source_rule')}"], width) +
-            panel("TUNNELS", compact_tunnels(data), width) +
+            panel("TUNNELS", compact_tunnels(data), width) + operations +
             panel("SERVICES", [f"{r['id']:<44} | {r['state']}" for r in data["services"]], width) +
             (panel("NOTICES", data["warnings"], width) if data["warnings"] else []))
     if tab == 1:
-        return panel("TUNNELS / Enter: details", compact_tunnels(data, selected), width)
+        return panel("TUNNELS / Enter: details", compact_tunnels(data, selected), width) + operations
     if tab == 2:
         lines = ["Use 7 Diagnostics for explicit external/internal ping.", ""]
         for r in tunnels:

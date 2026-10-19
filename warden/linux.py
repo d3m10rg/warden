@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 
 from . import __version__
+from .operation_state import read as operation_state
 from .core import (RETENTION, SERVICES, active_route, channel_health, channels, clean,
                    controller_state, number, parse_peers, probe_details, read_json, read_text,
                    service_state, vless_summary)
@@ -150,6 +151,7 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
                          for interface in sorted(interface_tools) if interface not in path_interfaces]
     for item in inventory:
         interface = item["interface"]
+        progress = None
         link = by_if.get(interface)
         peers = sorted(all_peers.get(interface, []), key=lambda p: p["peer_id"])
         rows = []
@@ -176,6 +178,10 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
                 role = "Retired" if item.get("retired") else "Stopped" if item.get("stopped") else "Maintenance" if item.get("maintenance") else "Disabled"
                 if role == "Stopped":
                     status, reason = ("Down", "Stopped by Warden; excluded from selection") if links is not None and link is None else ("Unknown", "Stopped flag; interface state differs or unavailable")
+                progress = operation_state(item["id"], interface) if item.get("maintenance") else None
+                if progress:
+                    role = "Starting" if progress["action"] == "start" else "Stopping"
+                    status, reason = "Unknown", progress["phase"] + "; backend operation in progress, channel excluded from selection"
         else:
             recent = sum(r["health"] == "Recent handshake" for r in rows)
             status = "Observed" if recent else "Unknown"
@@ -189,6 +195,7 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
                    generation=hashlib.sha256(json.dumps([(link or {}).get("ifindex"), [(p["peer_id"], p["generation"]) for p in rows]], sort_keys=True).encode()).hexdigest()[:16],
                    public_reachability="Not tested", private_reachability="Not tested")
         if is_channel:
+            row["operation_phase"] = progress["phase"] if role in ("Starting", "Stopping") else None
             row["probe_details"] = probe_details(health, item["id"])
             row["probes_fresh"] = controller["fresh"]
         objects.append(row)

@@ -113,6 +113,13 @@ class LifecycleTests(unittest.TestCase):
             change=transaction, encode=lambda d: json.dumps(d).encode(), verify_vless=Mock(), say=Mock(),
             probe_candidate=Mock(side_effect=lambda c: self.assertTrue(self.up and self.src_mark == "1")),
             probe_reply_change=lambda tx, c: tx.command(["sysctl", "-q", "-w", "key=1"], [["sysctl", "-q", "-w", "key=0"]]))
+        self.progress = Mock()
+        @contextlib.contextmanager
+        def observation(*args):
+            yield self.progress
+        p = patch.object(b, "observe", observation)
+        p.start()
+        self.addCleanup(p.stop)
 
     @staticmethod
     def parse_awg(text):
@@ -217,6 +224,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn("Client AWG/transport ready", text)
         self.assertNotIn("DO-NOT-LOG", text)
         self.ctl.probe_candidate.assert_not_called()
+        self.assertEqual(self.progress.call_args_list, [unittest.mock.call("Waiting for server"), unittest.mock.call("Starting")])
 
     def test_icmp_wait_timeout_rolls_back_to_stopped(self):
         self.icmp()

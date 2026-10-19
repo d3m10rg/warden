@@ -13,8 +13,10 @@ import time
 
 if __package__:
     from .maintenance_backend import guard, load_backend
+    from .operation_state import observe
 else:
     from maintenance_backend import guard, load_backend
+    from operation_state import observe
 
 STOP_DIR = Path("/etc/warden/stopped")
 UNIT_DIR = Path("/etc/systemd/system")
@@ -171,7 +173,7 @@ def lifecycle(ctl, args):
                       "Channel/config/unit changed since Stop; inspect before Start")
         guard(p)
         p.require(p.active_route() not in ("none", c["id"]), "A different active exit is required")
-        with ctl.change("ravelin", args) as tx:
+        with observe(ctl, c, args.action) as progress, ctl.change("ravelin", args) as tx:
             active = p.active_route()
             healthy, _ = p.probe_paths()
             p.require(healthy.get(active) is True, "Current alternative exit is unhealthy; Stop/Start refused")
@@ -212,7 +214,9 @@ def lifecycle(ctl, args):
                 tx.command(p.expected_default(c, c["table"]), [p.delete_default(c, c["table"])])
                 ctl.probe_reply_change(tx, c)
                 if coordinated:
+                    progress("Waiting for server")
                     wait_for_https(ctl, c, active)
+                    progress("Starting")
                 else:
                     ctl.probe_candidate(c)
             p.require(p.interface_exists(c["if"]) is (not stopping), "Interface state did not change as expected")
