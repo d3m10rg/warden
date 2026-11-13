@@ -91,8 +91,8 @@ def collect(cfg, runner=command, clock=time.time, monotonic=time.monotonic):
     except (OSError, ValueError, TypeError):
         health = {}
         errors.append("Controller state unavailable/invalid")
-    transport_units = tuple(("forpost-wss-" if p.get("transport") == "wss" else "forpost-faketcp-") + p["interface"] + ".service" for p in paths
-                            if p.get("transport") in ("icmp", "faketcp", "wss") and
+    transport_units = tuple(("forpost-hysteria2-" if p.get("transport") == "hysteria2" else "forpost-wss-" if p.get("transport") == "wss" else "forpost-faketcp-") + p["interface"] + ".service" for p in paths
+                            if p.get("transport") in ("icmp", "faketcp", "wss", "hysteria2") and
                             re.fullmatch(r"awgfp[0-9]{1,8}", p["interface"]))
     unit_names = SERVICES + transport_units
     tasks = {

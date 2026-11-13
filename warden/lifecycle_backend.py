@@ -42,9 +42,9 @@ def secure(p, path):
 def units(p, c):
     p.require(re.fullmatch(r"awgfp[0-9]+", c["if"]), "Only registered awgfp interfaces support Stop/Start")
     kind = (c.get("transport") or {}).get("kind", "udp")
-    p.require(kind in ("icmp", "faketcp", "wss"), "Stop/Start requires a known ICMP/fakeTCP/WSS transport")
+    p.require(kind in ("icmp", "faketcp", "wss", "hysteria2"), "Stop/Start requires a known ICMP/fakeTCP/WSS/Hysteria transport")
     return ["awg-quick@" + c["if"] + ".service",
-            ("forpost-wss-" if kind == "wss" else "forpost-faketcp-") + c["if"] + ".service"]
+            ("forpost-hysteria2-" if kind == "hysteria2" else "forpost-wss-" if kind == "wss" else "forpost-faketcp-") + c["if"] + ".service"]
 
 
 def unit_state(p, unit):

@@ -62,6 +62,9 @@ Linux CI проверяет код и condition; приёмка на Ravelin и 
 согласованный ICMP Start с ручным серверным reset и выводом прогресса во время ожидания;
 20.10.2026 на forpost1 подтверждены HTTPS 3/3, Maintenance и возврат Standby/Healthy.
 0.6.2 уточняет временное отображение Starting / Waiting for server и Stopping.
+0.6.3 включает в GitHub поддержку Hysteria2, добавленную при миграции Forpost1
+07.11.2026. Владелец подтвердил цикл Maintenance → Stop → Start → возврат через TUI
+13.11.2026. WSS и сохранение Stop после reboot на серверах ещё не приняты.
 
 ## 1.0 — стабильная эксплуатация
 

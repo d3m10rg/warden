@@ -209,6 +209,24 @@ class ClientTests(unittest.TestCase):
             self.assertNotIn("SECRET", json.dumps(data))
             self.assertTrue(any("forpost-faketcp-awgfp2.service" in c for c in calls))
 
+    def test_hysteria_collector_reads_the_correct_transport_service(self):
+        from warden import linux
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "channels.json"
+            channel = {"id": "reserve", "if": "awgfp1", "name": "Forpost1", "enabled": True,
+                       "rank": 40, "peer": "10.90.0.1", "local": "10.90.0.2", "public": "192.0.2.1",
+                       "transport": {"kind": "hysteria2", "private": "SECRET"}}
+            path.write_text(json.dumps({"version": 2, "channels": [channel]}))
+            cfg = dict(core.DEFAULTS, registry=str(path), health=str(path)+".missing", vless=str(path)+".missing")
+            calls = []
+            def runner(argv):
+                calls.append(argv)
+                return "[]" if "-j" in argv else ""
+            data = linux.collect(cfg, runner=runner)
+            self.assertEqual(data["tunnels"][0]["transport"], "hysteria2")
+            self.assertTrue(any("forpost-hysteria2-awgfp1.service" in call for call in calls))
+            self.assertNotIn("SECRET", json.dumps(data))
+
     @unittest.skipUnless(sys.platform == "linux", "Linux curses menu round-trip")
     def test_curses_clients_menu_returns_to_monitor(self):
         import fcntl

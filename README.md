@@ -1,4 +1,4 @@
-# Warden 0.6.2
+# Warden 0.6.3
 
 Локальная консоль наблюдения за VPN-туннелями и компонентами VLESS на Ravelin.
 Полноэкранный интерфейс в стиле CPView, командный режим и история за последние
@@ -8,7 +8,7 @@
 AWG и управление каналами остаются у `forpostctl` и установленного контроллера.
 
 ```text
-+- WARDEN 0.6.2 | DEMO | age 0s | FRESH --------------------------------------+
++- WARDEN 0.6.3 | DEMO | age 0s | FRESH --------------------------------------+
 | [1 Overview]  2 Tunnels   3 Hosts   4 VLESS                                 |
 |  5 Traffic   6 Events   7 Diagnostics   8 Clients                            |
 +-----------------------------------------------------------------------------+
@@ -122,7 +122,7 @@ warden start forpost1
 ```
 
 Stop доступен **после Maintenance on**, только для неактивного зарегистрированного
-канала awgfp с ICMP/fakeTCP/WSS. Текущий выход через другой канал должен пройти свежие
+канала awgfp с ICMP/fakeTCP/WSS/Hysteria2. Текущий выход через другой канал должен пройти свежие
 HTTPS-пробы. Сначала останавливается его AWG, затем транспорт. Записываются
 `enabled=false, maintenance=true, stopped=true` и закрытый marker
 `/etc/warden/stopped/<interface>`. Drop-in `90-warden-stop.conf` в каталогах обеих
@@ -144,13 +144,23 @@ Start удаляет marker, запускает транспорт и AWG, во�
 
 После восстановления клиента, маршрутов и mark Warden немедленно показывает
 `[WAIT] Client AWG/transport ready`. Только после этого на нужном Forpost вручную
-перезапускается **его udp2raw transport**, без перезапуска AWG. Для подтверждённой
-установки Forpost1 это `systemctl restart forpost-faketcp-awgfp0.service`.
-Для других VPS имя/зависимости следует проверить отдельно.
+перезапускается **его udp2raw transport**, без перезапуска AWG.
+Имя и зависимости серверной службы нужно проверить для выбранного ICMP-канала.
+Forpost1 с 07.11.2026 использует Hysteria2; перезапуск его старого ICMP-сервера
+в текущий сценарий Start не входит.
 Warden проверяет HTTPS до 90 секунд, каждая проба ограничена обычными 5 секундами.
 Нужны **3/3 успешных пробы одного цикла**; показываются этапы и причины ошибок.
 Таймаут или прерывание worker откатывает локальный Start в Stopped. Ручное действие
-на VPS в локальный rollback не входит. WSS/fakeTCP сохраняют обычную проверку.
+на VPS в локальный rollback не входит. WSS/fakeTCP/Hysteria2 сохраняют обычную проверку.
+
+В **0.6.3** включена поддержка `transport.kind=hysteria2`, ранее добавленная локально
+при миграции Forpost1. Collector и Stop/Start используют
+`forpost-hysteria2-<interface>.service`. Для Hysteria2 не нужен ICMP-флаг
+`--wait-for-server-reset`: Start проверяет HTTPS и оставляет Maintenance.
+Это выпуск совместимости Warden: установщик не мигрирует каналы, не заменяет PKI
+или transport config и перезапускает только Warden collector. Старый чистый тег
+0.6.2 не содержит этой поддержки; для обновления мигрированного узла используйте
+0.6.3 или новее, проверив описание соответствующего выпуска.
 В течение транзакции selector приостановлен; не оставляйте запуск без внимания.
 
 В **0.6.2** во время операции показывается Starting или Stopping. Для ICMP ожидание
@@ -183,10 +193,8 @@ warden status --live
 warden stop forpost1 --run
 warden status --live
 # Ожидается forpost1 Stopped / Down; остальные каналы сохраняются.
-warden start forpost1 --wait-for-server-reset --run
-# После [WAIT], в отдельной консоли Forpost1:
-# systemctl restart forpost-faketcp-awgfp0.service
-# Дождаться завершения Warden; следующие команды снова на Ravelin:
+warden start forpost1 --run  # текущий Forpost1 с Hysteria2
+# Дождаться завершения Warden:
 warden status --live
 # Ожидается Maintenance, интерфейс поднят; затем отдельный возврат:
 warden maintenance forpost1 off --run
@@ -236,7 +244,7 @@ VLESS source/marks и административный маршрут средс
 При ошибке после начала транзакции применяется его журналируемый откат; Warden
 показывает manifest и не повторяет изменение автоматически.
 
-AWG, WSS/udp2raw, их keys/config/MTU/buffers и probe-reply rules не меняются и не
+AWG, WSS/udp2raw/Hysteria2, их keys/config/MTU/buffers и probe-reply rules не меняются и не
 перезапускаются. Служба WSS определяется из transport.kind=wss и показывается как
 forpost-wss-<interface>.service, независимо от старого имени ICMP-сервиса.
 Внешний `forpostctl set-priority --enable` также может вернуть канал; если enabled=true,

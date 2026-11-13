@@ -317,6 +317,26 @@ class LifecycleTests(unittest.TestCase):
         self.assertFalse(any("disable" in c or "enable" in c for c in self.commands))
         self.invoke("stop")  # The installed drop-in is reusable.
 
+    def test_hysteria_stop_start_uses_its_service_without_icmp_reset(self):
+        data = json.loads(self.registry.read_text())
+        data["channels"][1]["transport"]["kind"] = "hysteria2"
+        self.registry.write_text(json.dumps(data))
+        old = self.group[1]
+        self.group[1] = "forpost-hysteria2-awgfp3.service"
+        state = self.states.pop(old)
+        fragment = self.root / self.group[1]
+        fragment.write_bytes(Path(state["FragmentPath"]).read_bytes())
+        state.update(Id=self.group[1], FragmentPath=str(fragment))
+        self.states[self.group[1]] = state
+        self.states[self.group[0]]["Requires"] = self.group[1]
+        self.assertFalse(a.lifecycle_plan(self.cfg, "reserve", "stop")["requires_server_reset"])
+        self.invoke("stop")
+        self.invoke("start")
+        self.assertEqual(core.channels(self.cfg)[1][1]["transport"], "hysteria2")
+        self.assertTrue(self.up)
+        self.assertEqual(self.active, "primary")
+        self.assertFalse(any(old in command for command in self.commands))
+
     def test_icmp_transport_uses_only_selected_pair(self):
         data = json.loads(self.registry.read_text())
         data["channels"][1]["transport"]["kind"] = "icmp"

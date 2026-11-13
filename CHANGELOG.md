@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.3
+
+- Publish the Hysteria2 compatibility patch previously installed during Forpost1
+  migration: parse the transport kind and use its service for observations and
+  guarded Stop/Start. Hysteria2 Start does not require the ICMP server-reset flag.
+- Preserve transport configuration, certificates, controller and service startup
+  behavior; updating Warden restarts only its collector.
+- Record the user's successful TUI Maintenance/Stop/Start/return acceptance on
+  Forpost1 with Hysteria2 and current collector memory observations.
+
 ## 0.6.2
 
 - Show Starting/Stopping and the ICMP Waiting for server phase in passive CLI/TUI

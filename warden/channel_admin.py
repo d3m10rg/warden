@@ -18,8 +18,8 @@ def lifecycle_plan(cfg, entity, action, wait_for_server_reset=False):
     row = next(r for r in channels(cfg)[1] if r["id"] == entity)
     if action not in ("stop", "start") or row.get("stopped", False) is not (action == "start"):
         raise ValueError("Channel is already stopped or not stopped by Warden")
-    if not re.fullmatch(r"awgfp[0-9]+", row["interface"]) or row["transport"] not in ("icmp", "faketcp", "wss"):
-        raise ValueError("Stop/Start supports only registered awgfp ICMP/fakeTCP/WSS channels")
+    if not re.fullmatch(r"awgfp[0-9]+", row["interface"]) or row["transport"] not in ("icmp", "faketcp", "wss", "hysteria2"):
+        raise ValueError("Stop/Start supports only registered awgfp ICMP/fakeTCP/WSS/Hysteria channels")
     if p["registry_sha256"] != hashlib.sha256(read_text(cfg["registry"]).encode()).hexdigest():
         raise ValueError("Registry changed; preview again")
     del p["state"]
