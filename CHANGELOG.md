@@ -9,6 +9,8 @@
   behavior; updating Warden restarts only its collector.
 - Record the user's successful TUI Maintenance/Stop/Start/return acceptance on
   Forpost1 with Hysteria2 and current collector memory observations.
+- Pin Linux CI to Ubuntu 24.04: ubuntu-latest moved to 26.04, where setup-python
+  cannot install the supported Python 3.9 test runtime.
 
 ## 0.6.2
 
