@@ -18,6 +18,20 @@ from unittest.mock import Mock, patch
 from warden import channel_admin as a, core, lifecycle_backend as b, maintenance_backend, linux
 from warden.cli import main
 
+LINUX_FIREWALL_UNIT = b"""# forpost3-reverse-wss-v1
+[Unit]
+Description=Forpost3 reverse WSS scoped ingress
+After=network-online.target
+Before=forpost-wss-awgfp3.service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/python3 /usr/local/libexec/forpost3-reverse-wss-firewall.py start
+ExecStop=/usr/bin/python3 /usr/local/libexec/forpost3-reverse-wss-firewall.py stop
+[Install]
+WantedBy=multi-user.target
+"""
+
 
 class LifecycleTests(unittest.TestCase):
     def setUp(self):
@@ -180,11 +194,10 @@ class LifecycleTests(unittest.TestCase):
         self.states[self.group[1]]["Requires"] = b.REVERSE_FW
         unit = b.UNIT_DIR / b.REVERSE_FW
         unit.parent.mkdir(parents=True, exist_ok=True)
-        unit.write_bytes(b"reviewed firewall unit fixture")
+        unit.write_bytes(LINUX_FIREWALL_UNIT)
         helper = self.root / "firewall.py"
         helper.write_bytes(b"reviewed firewall helper fixture")
         for p in (patch.object(b, "REVERSE_HELPER", helper),
-                  patch.object(b, "FW_UNIT_SHA", hashlib.sha256(unit.read_bytes()).hexdigest()),
                   patch.object(b, "FW_HELPER_SHA", hashlib.sha256(helper.read_bytes()).hexdigest())):
             p.start()
             self.addCleanup(p.stop)
@@ -248,6 +261,17 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported for this channel"):
             self.reverse_action("stop")
         self.assertTrue(self.up)
+
+    def test_reverse_wss_rejects_windows_rendering_and_changed_unit_commands(self):
+        self.reverse_wss()
+        unit = b.UNIT_DIR / b.REVERSE_FW
+        for content in (LINUX_FIREWALL_UNIT.replace(b"/usr/local/libexec/", b"\\usr\\local\\libexec\\"),
+                        LINUX_FIREWALL_UNIT.replace(b".py stop", b".py restart")):
+            unit.write_bytes(content)
+            with self.assertRaisesRegex(ValueError, "unit/helper changed"):
+                self.reverse_action("stop")
+            self.assertTrue(self.up)
+            self.assertEqual(self.rollbacks, 0)
 
     def test_reverse_wss_reconnect_failure_rolls_back_without_touching_firewall(self):
         self.reverse_wss()

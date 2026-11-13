@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.5
+
+- Fix the reverse-WSS firewall unit fingerprint: 0.6.4 calculated it using Windows
+  Path formatting instead of the deployed Linux path, rejecting valid installations.
+- Exercise the production fingerprint against the actual Linux unit fixture;
+  reject backslash-rendered paths and modified commands before mutations.
+- Keep exact helper/unit verification and all dependency guards; no server file edits.
+
 ## 0.6.4
 
 - Support the reviewed reverse-WSS Forpost3 firewall prerequisite without stopping,
