@@ -172,6 +172,95 @@ class LifecycleTests(unittest.TestCase):
     def invoke(self, action):
         b.lifecycle(self.ctl, self.args(action))
 
+    def reverse_wss(self):
+        data = json.loads(self.registry.read_text())
+        data["channels"][1]["id"] = "forpost3"
+        data["channels"][1]["transport"]["server_port"] = 8443
+        self.registry.write_text(json.dumps(data))
+        self.states[self.group[1]]["Requires"] = b.REVERSE_FW
+        unit = b.UNIT_DIR / b.REVERSE_FW
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        unit.write_bytes(b"reviewed firewall unit fixture")
+        helper = self.root / "firewall.py"
+        helper.write_bytes(b"reviewed firewall helper fixture")
+        for p in (patch.object(b, "REVERSE_HELPER", helper),
+                  patch.object(b, "FW_UNIT_SHA", hashlib.sha256(unit.read_bytes()).hexdigest()),
+                  patch.object(b, "FW_HELPER_SHA", hashlib.sha256(helper.read_bytes()).hexdigest())):
+            p.start()
+            self.addCleanup(p.stop)
+        self.states[b.REVERSE_FW] = dict(Id=b.REVERSE_FW, LoadState="loaded", ActiveState="active", SubState="exited",
+            Type="oneshot", RemainAfterExit="yes", StopWhenUnneeded="no", DropInPaths="", FragmentPath=str(unit),
+            RequiredBy=self.group[1], Requires="system.slice sysinit.target", Conflicts="shutdown.target")
+        self.p.TARGETS = [("192.0.2." + str(i), "example.invalid", "/") for i in range(1, 4)]
+        def probe(c, target, deadline=None, observation=None):
+            self.assertTrue(self.up and self.src_mark == "1")
+            observation.update(target=target[0], stage="complete", reason="ok")
+            return True
+        self.p.probe_one = probe
+
+    def reverse_action(self, action):
+        args = self.args(action)
+        args.id = "forpost3"
+        b.lifecycle(self.ctl, args)
+
+    def test_reverse_wss_stop_start_preserves_firewall_and_uses_reconnect_wait(self):
+        self.reverse_wss()
+        firewall = copy.deepcopy(self.states[b.REVERSE_FW])
+        self.reverse_action("stop")
+        self.reverse_action("start")
+        self.assertEqual(self.states[b.REVERSE_FW], firewall)
+        mutations = [c for c in self.commands if c[:2] in (["systemctl", "stop"], ["systemctl", "start"])]
+        self.assertEqual([c[2] for c in mutations], self.group + list(reversed(self.group)))
+        self.assertFalse(any(c[0] == "iptables" for c in self.commands))
+        row = core.channels(self.cfg)[1][1]
+        self.assertTrue(row["maintenance"])
+        self.assertFalse(row["stopped"])
+        self.assertEqual(self.active, "primary")
+        self.ctl.probe_candidate.assert_not_called()
+        self.assertIn("automatically", str(self.ctl.say.call_args_list))
+        self.assertNotIn("restart ONLY", str(self.ctl.say.call_args_list))
+
+    def test_reverse_wss_firewall_state_and_coupling_refused_before_mutation(self):
+        self.reverse_wss()
+        state = self.states[b.REVERSE_FW]
+        for change in (dict(ActiveState="inactive"), dict(StopWhenUnneeded="yes"), dict(PartOf=self.group[1]),
+                       dict(BindsTo=self.group[0]), dict(PropagatesStopTo="nginx.service"), dict(DropInPaths="/foreign.conf")):
+            old = state.copy()
+            with self.subTest(change=change):
+                state.update(change)
+                with self.assertRaises(ValueError):
+                    self.reverse_action("stop")
+                self.assertEqual(self.rollbacks, 0)
+                self.assertTrue(self.up)
+                state.clear()
+                state.update(old)
+
+    def test_reverse_wss_changed_helper_or_wrong_channel_refused(self):
+        self.reverse_wss()
+        original = b.REVERSE_HELPER.read_bytes()
+        b.REVERSE_HELPER.write_bytes(b"modified")
+        with self.assertRaisesRegex(ValueError, "unit/helper changed"):
+            self.reverse_action("stop")
+        b.REVERSE_HELPER.write_bytes(original)
+        data = json.loads(self.registry.read_text())
+        data["channels"][1]["transport"]["server_port"] = 443
+        self.registry.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "unsupported for this channel"):
+            self.reverse_action("stop")
+        self.assertTrue(self.up)
+
+    def test_reverse_wss_reconnect_failure_rolls_back_without_touching_firewall(self):
+        self.reverse_wss()
+        self.reverse_action("stop")
+        original = self.registry.read_bytes()
+        self.p.probe_one = lambda *args, **kwargs: False
+        with patch.object(b, "RESET_WINDOW", 0), self.assertRaisesRegex(ValueError, "Reverse WSS reconnect"):
+            self.reverse_action("start")
+        self.assertFalse(self.up)
+        self.assertEqual(self.registry.read_bytes(), original)
+        self.assertTrue((b.STOP_DIR / "awgfp3").exists())
+        self.assertEqual(self.states[b.REVERSE_FW]["ActiveState"], "active")
+
     def icmp(self):
         data = json.loads(self.registry.read_text())
         data["channels"][1]["transport"]["kind"] = "icmp"

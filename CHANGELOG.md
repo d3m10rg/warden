@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.4
+
+- Support the reviewed reverse-WSS Forpost3 firewall prerequisite without stopping,
+  restarting or editing it. Limit the exception to its Requires edge and channel;
+  verify the installed unit/helper hashes and independent active oneshot state.
+- Preserve prerequisite fingerprints across Stop/Start and reject changed files,
+  unexpected coupling/drop-ins and other foreign service dependencies.
+- Wait up to 90 seconds for automatic reverse-peer reconnect and HTTPS 3/3 on Start;
+  roll back local startup on timeout while preserving the firewall prerequisite.
+
 ## 0.6.3
 
 - Publish the Hysteria2 compatibility patch previously installed during Forpost1

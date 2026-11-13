@@ -85,6 +85,8 @@ def format_plan(p):
                 "Installed forpostctl owns SSH protection, shared lock, manifest and rollback."]
         if p.get("transport") == "icmp" and p["action"] == "stop":
             rows += ["The next ICMP Start requires a ready Forpost console for a manual server transport reset."]
+        if p.get("transport") == "wss":
+            rows += ["Reverse WSS: the reviewed Forpost3 firewall prerequisite stays active; Start may wait up to 90s for peer reconnect."]
         if p.get("requires_server_reset"):
             rows += ["ICMP: open a separate console on this Forpost before applying.",
                      "After [WAIT] restart ONLY its server udp2raw transport; do not restart AWG or Ravelin.",
